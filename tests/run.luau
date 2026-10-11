@@ -3,13 +3,16 @@
 -- The NIF package's suite, on the two NetImmerse 4.0.0.2 files jess-nif tested with
 -- (`assets/`) and on bytes built here. What the files hold was read off them once and is pinned
 -- below; `golden/nif.txt` holds the digests the port campaign froze after jess-nif agreed.
+local gamebryo = require '@nif/gamebryo'
+local header = require '@nif/header'
 local nif = require '@nif'
 local support = require './support'
 local test = require '@jess/test'
 local expect = test.expect
 local suite = test.new()
 
-local u32, i32, f32, sized = support.u32, support.i32, support.f32, support.sized
+local u8, u16, u32, i32, f32 = support.u8, support.u16, support.u32, support.i32, support.f32
+local sized, short = support.sized, support.short
 
 local AllTypes = support.asset 'all_types.nif'
 local RandomObjects = support.asset 'random_objects.nif'
@@ -201,6 +204,100 @@ end
 
 local ScenarioNames =
   { 'attach and detach', 'bare records', 'bounds', 'remove', 'shape', 'strips', 'textures' }
+
+local IdentityRows = f32(1)
+  .. f32(0)
+  .. f32(0)
+  .. f32(0)
+  .. f32(1)
+  .. f32(0)
+  .. f32(0)
+  .. f32(0)
+  .. f32(1)
+
+--- A Skyrim file (20.2.0.7, user version 12, stream 83) holding one `NiNode`: flags 14, at
+--- (1, 2, 3), its name the first entry of the header's string table, no links.
+local SkyrimNode = i32(0)
+  .. u32(0)
+  .. i32(-1)
+  .. u32(14)
+  .. f32(1)
+  .. f32(2)
+  .. f32(3)
+  .. IdentityRows
+  .. f32(1)
+  .. i32(-1)
+  .. u32(0)
+  .. u32(0)
+
+local SkyrimHeader = 'Gamebryo File Format, Version 20.2.0.7\n'
+  .. u32(0x14020007)
+  .. u8(1)
+  .. u32(12)
+  .. u32(1)
+  .. u32(83)
+  .. short 'author\0'
+  .. short 'process\0'
+  .. short 'export\0'
+  .. u16(1)
+  .. sized 'NiNode'
+  .. u16(0)
+  .. u32(#SkyrimNode)
+  .. u32(1)
+  .. u32(10)
+  .. sized 'Scene Root'
+  .. u32(0)
+
+local SkyrimFile = SkyrimHeader .. SkyrimNode .. u32(1) .. i32(0)
+
+--- The same node as Oblivion's 20.0.0.5 writes it, in a file without a Bethesda stream header:
+--- its name inline, 16-bit flags, and a property list.
+local OblivionNode = sized 'Scene Root'
+  .. u32(0)
+  .. i32(-1)
+  .. u16(14)
+  .. f32(1)
+  .. f32(2)
+  .. f32(3)
+  .. IdentityRows
+  .. f32(1)
+  .. u32(0)
+  .. i32(-1)
+  .. u32(0)
+  .. u32(0)
+
+local OblivionHeader = 'Gamebryo File Format, Version 20.0.0.5\n'
+  .. u32(0x14000005)
+  .. u8(1)
+  .. u32(0)
+  .. u32(1)
+  .. u16(1)
+  .. sized 'NiNode'
+  .. u16(0)
+  .. u32(0)
+
+local OblivionFile = OblivionHeader .. OblivionNode .. u32(1) .. i32(0)
+
+--- What the multi-version reader makes of either hand-built node.
+local SceneRoot = {
+  type = 'NiNode',
+  name = 'Scene Root',
+  flags = 14,
+  extra = -1,
+  extraList = {},
+  controller = -1,
+  collision = -1,
+  bounds = { type = 4294967295 },
+  transform = {
+    translation = vector.create(1, 2, 3),
+    rotation = { vector.create(1, 0, 0), vector.create(0, 1, 0), vector.create(0, 0, 1) },
+    scale = 1,
+  },
+  velocity = vector.zero,
+  properties = {},
+  children = {},
+  effects = {},
+}
 
 local function typesOf(file: nif.Nif): string
   local names = {}
@@ -997,6 +1094,405 @@ suite.describe('errors', function()
     local overlong = string.sub(bytes, 1, rootCount) .. u32(2) .. i32(0)
     expect(function() nif.open(overlong) end).toThrow 'buffer access out of bounds'
   end)
+end)
+
+suite.describe('@nif/header', function()
+  suite.it(
+    'parses both fixtures\' headers: a version line, a version, and a record count',
+    function()
+      for _, asset in Assets do
+        local parsed = header.parse(buffer.fromstring(asset.bytes))
+        expect(parsed).toEqual {
+          versionLine = 'NetImmerse File Format, Version 4.0.0.2',
+          version = 0x04000002,
+          userVersion = 0,
+          recordCount = if asset.name == 'all_types.nif' then 85 else 20,
+          recordTypes = {},
+          recordTypeIndices = {},
+          recordSizes = {},
+          strings = {},
+          size = 48,
+        }
+        expect(header.game(parsed)).toBe 'Morrowind'
+        expect(header.versionString(parsed.version)).toBe '4.0.0.2'
+        expect(header.recordType(parsed, 0)).toBeNil()
+
+        -- Without record sizes there is no telling where the roots are.
+        expect(header.roots(parsed, buffer.fromstring(asset.bytes))).toBeNil()
+        expect(header.parse(buffer.fromstring(string.sub(asset.bytes, 1, 48)))).toEqual(parsed)
+      end
+    end
+  )
+
+  suite.it('packs versions big end first and names the ones that matter', function()
+    expect(header.version(4, 0, 0, 2)).toBe(0x04000002)
+    expect(header.version(20, 2, 0, 7)).toBe(0x14020007)
+    expect(header.versionString(0x14020007)).toBe '20.2.0.7'
+    expect(header.versionString(0x0A000102)).toBe '10.0.1.2'
+    expect(header.versions).toEqual {
+      morrowind = 0x04000002,
+      oblivionOld = 0x0A000102,
+      oblivion = 0x14000005,
+      bethesda = 0x14020007,
+    }
+
+    expect(header.bethVersions).toEqual {
+      fo3 = 34,
+      skyrim = 83,
+      sse = 100,
+      fo4 = 130,
+      f76 = 155,
+      starfield = 172,
+    }
+  end)
+
+  suite.it('reads a Skyrim header: stream version, author, types, sizes, and strings', function()
+    local bytes = buffer.fromstring(SkyrimFile)
+    local parsed = header.parse(bytes)
+    expect(parsed).toEqual {
+      versionLine = 'Gamebryo File Format, Version 20.2.0.7',
+      version = 0x14020007,
+      userVersion = 12,
+      bethVersion = 83,
+      author = 'author',
+      recordCount = 1,
+      recordTypes = { 'NiNode' },
+      recordTypeIndices = { 0 },
+      recordSizes = { 80 },
+      strings = { 'Scene Root' },
+      size = 125,
+    }
+    expect(parsed.size).toBe(#SkyrimHeader)
+    expect(header.game(parsed)).toBe 'Skyrim'
+    expect(header.recordType(parsed, 0)).toBe 'NiNode'
+    expect(header.recordType(parsed, 1)).toBeNil()
+    expect(header.roots(parsed, bytes)).toEqual { 0 }
+    expect(header.roots(parsed, buffer.fromstring(string.sub(SkyrimFile, 1, #SkyrimFile - 1)))).toBeNil()
+    expect(header.roots(parsed, buffer.fromstring(SkyrimHeader .. SkyrimNode))).toBeNil()
+  end)
+
+  suite.it('reads an Oblivion header without a Bethesda stream', function()
+    local parsed = header.parse(buffer.fromstring(OblivionFile))
+    expect(parsed).toEqual {
+      versionLine = 'Gamebryo File Format, Version 20.0.0.5',
+      version = 0x14000005,
+      userVersion = 0,
+      recordCount = 1,
+      recordTypes = { 'NiNode' },
+      recordTypeIndices = { 0 },
+      recordSizes = {},
+      strings = {},
+      size = 70,
+    }
+    expect(header.game(parsed)).toBe 'Oblivion'
+    expect(header.roots(parsed, buffer.fromstring(OblivionFile))).toBeNil()
+  end)
+
+  suite.it(
+    'reads a Fallout 76 stream header, which has a number where the process script was',
+    function()
+      local bytes = 'Gamebryo File Format, Version 20.2.0.7\n'
+        .. u32(0x14020007)
+        .. u8(1)
+        .. u32(12)
+        .. u32(0)
+        .. u32(155)
+        .. short 'me\0'
+        .. u32(7)
+        .. short 'export\0'
+        .. short 'path\0'
+        .. u16(0)
+        .. u32(0)
+        .. u32(0)
+        .. u32(0)
+      local parsed = header.parse(buffer.fromstring(bytes))
+      expect(parsed.bethVersion).toBe(155)
+      expect(parsed.author).toBe 'me'
+      expect(parsed.size).toBe(#bytes)
+      expect(header.game(parsed)).toBe 'Fallout 76'
+      expect(header.roots(parsed, buffer.fromstring(bytes .. u32(0)))).toEqual {}
+    end
+  )
+
+  suite.it('names the game by version and stream version', function()
+    local function game(version: number, bethVersion: number?): string
+      return header.game({ version = version, bethVersion = bethVersion } :: any)
+    end
+
+    local bethesda = header.versions.bethesda
+    expect(game(header.versions.morrowind)).toBe 'Morrowind'
+    expect(game(header.versions.oblivionOld)).toBe 'Oblivion'
+    expect(game(header.version(10, 2, 0, 0))).toBe 'Oblivion'
+    expect(game(header.versions.oblivion, 11)).toBe 'Oblivion'
+    expect(game(bethesda, 34)).toBe 'Fallout 3/New Vegas'
+    expect(game(bethesda, 82)).toBe 'Fallout 3/New Vegas'
+    expect(game(bethesda, 83)).toBe 'Skyrim'
+    expect(game(bethesda, 99)).toBe 'Skyrim'
+    expect(game(bethesda, 100)).toBe 'Skyrim Special Edition'
+    expect(game(bethesda, 129)).toBe 'Skyrim Special Edition'
+    expect(game(bethesda, 130)).toBe 'Fallout 4'
+    expect(game(bethesda, 154)).toBe 'Fallout 4'
+    expect(game(bethesda, 155)).toBe 'Fallout 76'
+    expect(game(bethesda, 171)).toBe 'Fallout 76'
+    expect(game(bethesda, 172)).toBe 'Starfield'
+    expect(game(bethesda)).toBe 'other'
+    expect(game(header.version(3, 3, 0, 13))).toBe 'other'
+    expect(game(header.version(20, 3, 0, 9), 34)).toBe 'other'
+  end)
+
+  suite.it('replaces bytes that aren\'t UTF-8, one mark per bad sequence', function()
+    expect(header.lossy 'plain').toBe 'plain'
+    expect(header.lossy 'caf\u{E9}').toBe 'caf\u{E9}'
+    expect(header.lossy 'a\xFFb').toBe 'a\u{FFFD}b'
+    expect(header.lossy 'a\xE2\x82').toBe 'a\u{FFFD}'
+    expect(header.lossy '\xFF\xFE').toBe '\u{FFFD}\u{FFFD}'
+
+    local line = 'NetImmerse File Format, \xFF\n' .. u32(0x04000002) .. u32(0)
+    expect(header.parse(buffer.fromstring(line)).versionLine).toBe 'NetImmerse File Format, \u{FFFD}'
+  end)
+
+  suite.it('refuses what OpenMW refuses, by name', function()
+    local function parse(bytes: string): () -> ()
+      return function() header.parse(buffer.fromstring(bytes)) end
+    end
+
+    local oblivion = 'Gamebryo File Format, Version 20.0.0.5\n' .. u32(0x14000005)
+    expect(parse 'junk\n').toThrow 'Invalid NIF header: junk'
+    expect(parse 'TES3 and then some\nmore').toThrow 'Invalid NIF header: TES3 and then some'
+    expect(parse(oblivion .. u8(0))).toThrow 'Big endian NIF files are unsupported'
+    expect(
+      parse(
+        'Gamebryo File Format, Version 20.3.1.2\n' .. u32(0x14030102) .. u8(1) .. u32(0) .. u32(0)
+      )
+    ).toThrow 'Hashed record types are unsupported'
+    expect(parse(oblivion .. u8(1) .. u32(0) .. u32(1) .. u16(1) .. sized '' .. u16(0) .. u32(0))).toThrow 'Record type is blank (index 0)'
+    expect(
+      parse(oblivion .. u8(1) .. u32(0) .. u32(1) .. u16(1) .. sized 'NiNode' .. u16(5) .. u32(0))
+    ).toThrow 'Record type is blank (index 0)'
+  end)
+
+  suite.it('says where a header is cut short', function()
+    local function parse(length: number): () -> ()
+      return function() header.parse(buffer.fromstring(string.sub(SkyrimHeader, 1, length))) end
+    end
+
+    expect(parse(0)).toThrow 'truncated version line at offset 0'
+    expect(parse(38)).toThrow 'truncated version line at offset 0'
+    expect(parse(39)).toThrow 'truncated version at offset 39'
+    expect(parse(44)).toThrow 'truncated user version at offset 44'
+    expect(parse(60)).toThrow 'truncated author at offset 57'
+    expect(parse(80)).toThrow 'truncated export script at offset 74'
+    expect(parse(100)).toThrow 'truncated string count at offset 99'
+    expect(parse(124)).toThrow 'truncated group count at offset 121'
+
+    for length = 0, #SkyrimHeader - 1 do
+      expect(parse(length)).toThrow 'truncated '
+    end
+
+    for length = 0, 47 do
+      expect(function() header.parse(buffer.fromstring(string.sub(AllTypes, 1, length))) end).toThrow 'truncated '
+    end
+  end)
+end)
+
+suite.describe('@nif/gamebryo', function()
+  suite.it('reads random_objects.nif as OpenMW does: every record through its class', function()
+    local file = gamebryo.open(RandomObjects)
+    expect(#file.records).toBe(20)
+    expect(table.concat(file.names, ' ')).toBe(RandomObjectsRecords)
+    expect(table.concat(file.classes, ' ')).toBe(RandomObjectsRecords)
+    expect(table.concat(file.recordTypes, ' ')).toBe(RandomObjectsRecords)
+    expect(file.roots).toEqual { 0 }
+    expect(file.header).toEqual(header.parse(buffer.fromstring(RandomObjects)))
+    expect(file.records[1]).toEqual {
+      type = 'NiNode',
+      name = 'random_objects.nif',
+      flags = 0,
+      extra = -1,
+      extraList = {},
+      controller = -1,
+      collision = -1,
+      bounds = { type = 4294967295 },
+      transform = {
+        translation = vector.zero,
+        rotation = { vector.create(1, 0, 0), vector.create(0, 1, 0), vector.create(0, 0, 1) },
+        scale = 1,
+      },
+      velocity = vector.zero,
+      properties = {},
+      children = { 1, 3, 9, 11, 12, 14, 18 },
+      effects = {},
+    }
+
+    local cone = file.records[2]
+    expect(cone.type).toBe 'NiTriShape'
+    expect(cone.name).toBe 'Cone'
+    expect(cone.flags).toBe(2)
+    expect(cone.data).toBe(2)
+    expect(cone.skin).toBe(-1)
+    expect(cone.transform.scale).toBe(1.1419281959533691)
+    expect(file.records[15].properties).toEqual { 15, 16 }
+    expect(file.records[16]).toEqual {
+      type = 'NiWireframeProperty',
+      name = '',
+      extra = -1,
+      extraList = {},
+      controller = -1,
+      enable = true,
+    }
+
+    expect(file.records[17]).toEqual {
+      type = 'NiMaterialProperty',
+      name = '',
+      extra = -1,
+      extraList = {},
+      controller = -1,
+      flags = 1,
+      ambient = vector.create(1, 0, 0),
+      diffuse = vector.create(1, 0, 0),
+      specular = vector.create(1, 0, 0),
+      emissive = vector.create(1, 0, 0),
+      emissiveMult = 1,
+      glossiness = 0,
+      alpha = 1,
+    }
+
+    local data = file.records[18]
+    expect(data.type).toBe 'NiTriShapeData'
+    expect(data.numVertices).toBe(8)
+    expect(data.numTriangles).toBe(12)
+    expect(data.vertices.count).toBe(8)
+    expect(data.vertices:get(8)).toBe(vector.create(0.5, 0.5, 0.5))
+    expect(data.triangles.count).toBe(36)
+    expect(data.triangles:toTable()[3]).toBe(1)
+    expect(data.normals.count).toBe(0)
+    expect(data.uvList).toEqual {}
+    expect(data.boundingSphere).toEqual { center = vector.zero, radius = 0.8660253882408142 }
+  end)
+
+  suite.it('takes a buffer as it takes a string', function()
+    local file = gamebryo.open(buffer.fromstring(RandomObjects))
+    expect(#file.records).toBe(20)
+    expect(file.records[5].name).toBe 'Cube'
+  end)
+
+  suite.it('refuses all_types.nif at the record type OpenMW has no reader for', function()
+    local message, record = support.thrown(function() gamebryo.open(AllTypes) end)
+    expect(message).toBe 'Unknown record type NiBltSource'
+    expect(record).toBe(1)
+  end)
+
+  suite.it('reads what the model builds', function()
+    local file = gamebryo.open(Scenarios['shape']())
+    expect(table.concat(file.names, ' ')).toBe 'NiNode NiTriShapeData NiSourceTexture NiTexturingProperty NiMaterialProperty NiTriShape'
+    expect(file.roots).toEqual { 0 }
+    expect(file.records[1].children).toEqual { 5 }
+    expect(file.records[6].name).toBe 'Tri Shape'
+    expect(file.records[6].data).toBe(1)
+    expect(file.records[6].properties).toEqual { 3, 4 }
+    expect(file.records[2].numVertices).toBe(5)
+    expect(file.records[5].alpha).toBe(0.5)
+  end)
+
+  suite.it('reads an Oblivion node and a Skyrim node to the same record', function()
+    local oblivion = gamebryo.open(OblivionFile)
+    expect(oblivion.records).toEqual { SceneRoot }
+    expect(oblivion.names).toEqual { 'NiNode' }
+    expect(oblivion.classes).toEqual { 'NiNode' }
+    expect(oblivion.recordTypes).toEqual { 'NiNode' }
+    expect(oblivion.roots).toEqual { 0 }
+    expect(oblivion.header.version).toBe(header.versions.oblivion)
+
+    local skyrim = gamebryo.open(SkyrimFile)
+    expect(skyrim.records).toEqual { SceneRoot }
+    expect(skyrim.names).toEqual { 'NiNode' }
+    expect(skyrim.roots).toEqual { 0 }
+    expect(skyrim.header.bethVersion).toBe(83)
+
+    -- The Morrowind model is for 4.0.0.2 alone.
+    expect(function() nif.open(SkyrimFile) end).toThrow 'Invalid NIF Header'
+    expect(function() nif.open(OblivionFile) end).toThrow 'Invalid NIF Header'
+  end)
+
+  suite.it('refuses a record type it doesn\'t know, and a blank one', function()
+    local unknown = string.sub(RandomObjects, 1, 52) .. 'XiNode' .. string.sub(RandomObjects, 59)
+    local message, record = support.thrown(function() gamebryo.open(unknown) end)
+    expect(message).toBe 'Unknown record type XiNode'
+    expect(record).toBe(0)
+
+    local blank = string.sub(RandomObjects, 1, 48) .. u32(0) .. string.sub(RandomObjects, 59)
+    message, record = support.thrown(function() gamebryo.open(blank) end)
+    expect(message).toBe 'Record type is blank (index 0)'
+    expect(record).toBe(0)
+  end)
+
+  suite.it('refuses a link to a record of the wrong class', function()
+    local file = nif.new()
+    local root = file:insert { type = 'NiNode', name = 'Root' }
+    file:attach(root, file:insert { type = 'NiTriShapeData' })
+    file.roots = { root }
+
+    local message, record = support.thrown(function() gamebryo.open(file:save()) end)
+    expect(message).toBe 'Failed to cast record pointer to NiAVObject: record 1 is a NiTriShapeData'
+    expect(record).toBe(0)
+  end)
+
+  suite.it('refuses a link past the last record, which the model saves as no link', function()
+    local file = nif.new()
+    local root = file:insert { type = 'NiNode', name = 'Root' }
+    file:attach(root, file:insert { type = 'NiNode', name = 'Child' })
+    file.roots = { root }
+
+    -- The root's one child link is the four bytes before its empty effect list.
+    local bytes = saved(file)
+    local linkAt = nif.open(bytes).starts[2] - 8
+    expect(string.sub(bytes, linkAt + 1, linkAt + 4)).toBe(i32(1))
+    expect(gamebryo.open(bytes).records[1].children).toEqual { 1 }
+
+    local patched = string.sub(bytes, 1, linkAt) .. i32(99) .. string.sub(bytes, linkAt + 5)
+    local message, record = support.thrown(function() gamebryo.open(patched) end)
+    expect(message).toBe 'NiNode links to record 99, past the 2 records'
+    expect(record).toBe(0)
+
+    local model = nif.open(patched)
+    expect(model:reachableCount()).toBe(1)
+
+    local resaved = nif.open(model:save())
+    expect(resaved.count).toBe(1)
+    expect((resaved:record(0) :: any).children:toTable()).toEqual { -1 }
+    expect(gamebryo.open(model:save()).records[1].children).toEqual { -1 }
+  end)
+
+  suite.it('refuses a file cut short', function()
+    local message, record = support.thrown(
+      function() gamebryo.open(string.sub(RandomObjects, 1, 1000)) end
+    )
+    expect(message).toBe 'Trying to read more than stream size: 1536 max=1000'
+    expect(record).toBe(2)
+    expect(support.thrown(function() gamebryo.open '' end)).toBe 'truncated version line at offset 0'
+
+    for length = 0, #RandomObjects - 1, 1009 do
+      if not support.thrown(function() gamebryo.open(string.sub(RandomObjects, 1, length)) end) then
+        error(`the first {length} bytes of random_objects.nif were read`, 0)
+      end
+    end
+  end)
+
+  for _, asset in Assets do
+    suite.it(`gives jess-nif's answer for {asset.name}`, function()
+      local observed = support.digest(support.attempt(function(): unknown
+        local file = gamebryo.open(buffer.fromstring(asset.bytes))
+        return {
+          records = file.records,
+          names = file.names,
+          classes = file.classes,
+          recordTypes = file.recordTypes,
+          roots = file.roots,
+        }
+      end))
+      expect(observed).toBe(Golden[`fixture/{asset.name}/gamebryo`])
+    end)
+  end
 end)
 
 return suite
