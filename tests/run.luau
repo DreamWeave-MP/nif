@@ -1489,6 +1489,45 @@ suite.describe('@nif/gamebryo', function()
     expect(record).toBe(1)
   end)
 
+  suite.it('reads each record type the model builds bare, or refuses it by name', function()
+    local unknown, refused, read = {}, {}, 0
+    for _, name in nif.recordTypes do
+      local file = nif.new()
+      file.roots = { file:insert { type = name } }
+
+      local message = support.thrown(function()
+        local opened = gamebryo.open(file:save())
+        expect(#opened.records).toBe(1)
+        expect(opened.names).toEqual { name }
+
+        -- A record's `type` is its name, unless its class has a field called that: a gravity's
+        -- is its force type.
+        expect(opened.records[1].type).toBe(if name == 'NiGravity' then 0 else name)
+        expect(opened.roots).toEqual { 0 }
+      end)
+
+      if not message then
+        read += 1
+      elseif message == `Unknown record type {name}` then
+        table.insert(unknown, name)
+      else
+        table.insert(refused, `{name}: {message}`)
+      end
+    end
+
+    -- The model's abstract bases, and the types OpenMW's factory has no reader for.
+    expect(read).toBe(79)
+    expect(table.concat(unknown, ' ')).toBe(
+      'NiObject NiObjectNET NiAVObject BSMirroredNode NiBSAnimationManager NiBSPNode'
+        .. ' NiDynamicEffect NiLight NiGeometry NiTriBasedGeom NiGeometryData NiTriBasedGeomData'
+        .. ' NiTriShapeDynamicData NiTexture NiRenderedTexture NiRenderedCubeMap NiBltSource'
+        .. ' NiProperty BrickNiExtraData TES3ObjectExtraData NiTimeController NiFloatController'
+        .. ' NiMorpherController NiKeyframeManager NiParticleModifier NiParticleCollider'
+        .. ' NiEmitterModifier NiRotData NiScreenPolygon NiAccumulator NiRenderer NiDX8Renderer'
+    )
+    expect(refused).toEqual { 'NiSkinInstance: NiSkinInstance missing root or data' }
+  end)
+
   suite.it('reads what the model builds', function()
     local file = gamebryo.open(Scenarios['shape']())
     expect(table.concat(file.names, ' ')).toBe 'NiNode NiTriShapeData NiSourceTexture NiTexturingProperty NiMaterialProperty NiTriShape'
