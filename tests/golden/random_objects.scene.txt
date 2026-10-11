@@ -1,0 +1,39 @@
+nodes:
+  0 #0 NiNode "random_objects.nif" at (0.000, 0.000, 0.000)
+    1 #1 NiTriShape "Cone" at (-276.185, -88.824, 127.005)
+    2 #3 NiNode "Empty 1" at (214.111, -63.317, 124.824)
+      3 #4 NiTriShape "Cube" at (253.983, -42.441, 55.327)
+      4 #6 NiNode "Empty 2" at (35.822, 311.528, 284.234)
+        5 #7 NiTriShape "Sphere" at (142.089, 228.301, 151.670)
+    6 #9 NiTriShape "Suzanne1" at (-4.465, -119.554, 1.404)
+    7 #11 NiTriShape "Suzanne2" at (-100.560, 139.835, 232.379)
+    8 #12 NiTriShape "Torus" at (-219.660, 253.516, 215.067)
+    9 #14 NiTriShape "unitCube" at (0.000, 0.000, 0.000)
+    10 #18 NiTriShape "unitSphere" at (0.000, 0.000, 0.000)
+drawables:
+  0 node 1 [#1 < #0] geometry 0 material 0 opaque
+  1 node 3 [#4 < #3 < #0] geometry 1 material 0 opaque
+  2 node 5 [#7 < #6 < #3 < #0] geometry 2 material 0 opaque
+  3 node 6 [#9 < #0] geometry 3 material 0 opaque
+  4 node 7 [#11 < #0] geometry 3 material 0 opaque
+  5 node 8 [#12 < #0] geometry 4 material 0 opaque
+  6 node 9 [#14 < #0] geometry 5 material 1 opaque
+  7 node 10 [#18 < #0] geometry 6 material 1 opaque
+geometries:
+  0 #2 NiTriShapeData vertices 128 triangles 62 uv-sets 1 normals
+  1 #5 NiTriShapeData vertices 24 triangles 12 uv-sets 1 normals
+  2 #8 NiTriShapeData vertices 1984 triangles 960 uv-sets 1 normals
+  3 #10 NiTriShapeData vertices 2065 triangles 968 uv-sets 1 normals
+  4 #13 NiTriShapeData vertices 2304 triangles 1152 uv-sets 1 normals
+  5 #17 NiTriShapeData vertices 8 triangles 12 uv-sets 0
+  6 #19 NiTriShapeData vertices 240 triangles 80 uv-sets 0
+materials:
+  0
+    Modulate ambient (1.000, 1.000, 1.000) diffuse (1.000, 1.000, 1.000) emissive (0.000, 0.000, 0.000) alpha 1.000 vertex-colors None
+    depth test true write true cull Back
+  1 material #16 wireframe #15
+    Modulate ambient (1.000, 0.000, 0.000) diffuse (1.000, 0.000, 0.000) emissive (1.000, 0.000, 0.000) alpha 1.000 vertex-colors None
+    depth test true write true cull Back wireframe
+textures:
+skins:
+issues:

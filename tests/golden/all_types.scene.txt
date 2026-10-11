@@ -1,0 +1,83 @@
+nodes:
+  0 #0 NiNode "" at (0.000, 0.000, 0.000)
+  1 #10 NiDirectionalLight "" at (0.000, 0.000, 0.000)
+  2 #11 NiSpotLight "" at (0.000, 0.000, 0.000)
+  3 #12 NiAmbientLight "" at (0.000, 0.000, 0.000)
+  4 #13 NiPointLight "" at (0.000, 0.000, 0.000)
+  5 #14 NiTextureEffect "" at (0.000, 0.000, 0.000)
+  6 #18 NiNode "Scene Root" at (0.000, 0.000, 0.000)
+    7 #33 NiCamera "" at (0.000, 0.000, 0.000)
+    8 #36 NiFltAnimationNode "" at (0.000, 0.000, 0.000)
+    9 #37 NiLODNode "" at (0.000, 0.000, 0.000)
+    10 #38 NiSwitchNode "" at (0.000, 0.000, 0.000)
+    11 #39 NiSortAdjustNode "" at (0.000, 0.000, 0.000)
+    12 #40 NiBillboardNode "" at (0.000, 0.000, 0.000) billboard
+    13 #41 NiBSPNode "" at (0.000, 0.000, 0.000)
+    14 #42 NiBSParticleNode "" at (0.000, 0.000, 0.000)
+    15 #43 NiCollisionSwitch "" at (0.000, 0.000, 0.000)
+    16 #44 NiBSAnimationNode "" at (0.000, 0.000, 0.000)
+    17 #45 RootCollisionNode "" at (0.000, 0.000, 0.000) collision
+    18 #46 AvoidNode "" at (0.000, 0.000, 0.000)
+    19 #47 NiAutoNormalParticles "auto normal particles" at (0.000, 0.000, 0.000)
+    20 #54 NiTriShape "dynamic" at (0.000, 0.000, 0.000)
+    21 #61 NiLines "lines" at (0.000, 0.000, 0.000)
+    22 #63 NiParticles "particles" at (0.000, 0.000, 0.000)
+    23 #68 NiRotatingParticles "rotating particles" at (0.000, 0.000, 0.000)
+    24 #73 NiTriShape "shape" at (0.000, 0.000, 0.000)
+    25 #77 NiTriStrips "strips" at (0.000, 0.000, 0.000)
+  26 #84 NiNode "" at (0.000, 0.000, 0.000)
+drawables:
+  0 node 20 [#54 < #18] geometry 0 material 0 opaque
+  1 node 24 [#73 < #18] geometry 1 material 0 opaque
+geometries:
+  0 #60 NiTriShapeDynamicData vertices 4 triangles 2 uv-sets 1 normals
+  1 #76 NiTriShapeData vertices 4 triangles 2 uv-sets 1 normals
+materials:
+  0
+    Modulate ambient (1.000, 1.000, 1.000) diffuse (1.000, 1.000, 1.000) emissive (0.000, 0.000, 0.000) alpha 1.000 vertex-colors None
+    depth test true write true cull Back
+textures:
+skins:
+issues:
+  #1 NiBltSource root isn't a scene object
+  #2 NiTexturingProperty root isn't a scene object
+  #3 NiZBufferProperty root isn't a scene object
+  #4 NiStencilProperty root isn't a scene object
+  #5 NiVertexColorProperty root isn't a scene object
+  #6 NiFogProperty root isn't a scene object
+  #7 NiAlphaProperty root isn't a scene object
+  #8 NiDitherProperty root isn't a scene object
+  #9 NiBSPArrayController root isn't a scene object
+  #10 NiDirectionalLight dynamic effect not translated
+  #11 NiSpotLight dynamic effect not translated
+  #12 NiAmbientLight dynamic effect not translated
+  #13 NiPointLight dynamic effect not translated
+  #14 NiTextureEffect dynamic effect not translated
+  #15 NiSourceTexture root isn't a scene object
+  #16 NiSequenceStreamHelper root isn't a scene object
+  #17 NiDX8Renderer root isn't a scene object
+  #25 NiFlipController controller not evaluated
+  #26 NiKeyframeController controller not evaluated
+  #27 NiAlphaController controller not evaluated
+  #28 NiRollController controller not evaluated
+  #29 NiLightColorController controller not evaluated
+  #30 NiLookAtController controller not evaluated
+  #31 NiMaterialColorController controller not evaluated
+  #36 NiFltAnimationNode node type's children or draw order not translated
+  #37 NiLODNode node type's children or draw order not translated
+  #39 NiSortAdjustNode node type's children or draw order not translated
+  #48 NiParticleSystemController controller not evaluated
+  #47 NiAutoNormalParticles geometry isn't triangles
+  #55 NiPathController controller not evaluated
+  #56 NiUVController controller not evaluated
+  #57 NiVisController controller not evaluated
+  #61 NiLines geometry isn't triangles
+  #64 NiParticleSystemController controller not evaluated
+  #63 NiParticles geometry isn't triangles
+  #69 NiParticleSystemController controller not evaluated
+  #68 NiRotatingParticles geometry isn't triangles
+  #74 NiGeomMorpherController controller not evaluated
+  #78 NiTriStripsData no vertices or triangles
+  #79 NiSourceTexture root isn't a scene object
+  #82 NiSkinPartition root isn't a scene object
+  #83 NiKeyframeManager root isn't a scene object

@@ -3,9 +3,13 @@
 -- The NIF package's suite, on the two NetImmerse 4.0.0.2 files jess-nif tested with
 -- (`assets/`) and on bytes built here. What the files hold was read off them once and is pinned
 -- below; `golden/nif.txt` holds the digests the port campaign froze after jess-nif agreed.
+local check = require '@nif/check'
+local fix = require '@nif/fix'
 local gamebryo = require '@nif/gamebryo'
 local header = require '@nif/header'
+local info = require '@nif/info'
 local nif = require '@nif'
+local scene = require '@nif/scene'
 local support = require './support'
 local test = require '@jess/test'
 local expect = test.expect
@@ -354,6 +358,109 @@ local function recordDigests(file: nif.Nif): { [number]: string }
   end
 
   return digests
+end
+
+--- A file whose root has a `RootCollisionNode` under a child node, an editor marker shape,
+--- and `NCc` string data: one finding each for `check`, and one repair each for `fix`.
+local function defects(): nif.Nif
+  local file = nif.new()
+  local root = file:insert { type = 'NiNode', name = 'Root' }
+  local lowercase = file:insert { type = 'NiStringExtraData', value = 'NCc', bytesRemaining = 7 }
+  local rootNode = file:record(root) :: any
+  rootNode.extraData = lowercase
+
+  local inner = file:insert { type = 'NiNode', name = 'Inner' }
+  file:attach(root, inner)
+  file:attach(inner, file:insert { type = 'RootCollisionNode', name = 'RootCollisionNode' })
+  file:shape {
+    name = 'Tri EditorMarker 0',
+    vertices = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 } },
+    triangles = { { 0, 1, 2 } },
+    parent = root,
+  }
+  file.roots = { root }
+  return file
+end
+
+--- A skinned triangle whose one bone weights vertices 0, 2, and 7, of the shape's three. The
+--- model builds everything but the weights, whose array kind only a file can supply: the bone
+--- is spliced into the saved `NiSkinData` (record 2), after its bone count and partition link.
+local function skinned(): string
+  local file = nif.new()
+  local root = file:insert { type = 'NiNode', name = 'Root' }
+  local bone = file:insert { type = 'NiNode', name = 'Bone' }
+  file:attach(root, bone)
+
+  local data = file:insert { type = 'NiSkinData' }
+  local skin = file:insert { type = 'NiSkinInstance', data = data, root = root, bones = { bone } }
+  local shape = file:shape {
+    name = 'Skinned',
+    vertices = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 } },
+    triangles = { { 0, 1, 2 } },
+    parent = root,
+  }
+  local shapeRecord = file:record(shape) :: any
+  shapeRecord.skinInstance = skin
+  file.roots = { root }
+
+  local bytes = buffer.tostring(file:save())
+  local body = nif.open(bytes).bodies[data + 1]
+  local weights = u16(3) .. u16(0) .. f32(1) .. u16(2) .. f32(0.5) .. u16(7) .. f32(0.25)
+  local boneData = IdentityRows
+    .. f32(0)
+    .. f32(0)
+    .. f32(0)
+    .. f32(1)
+    .. string.rep('\0', 16)
+    .. weights
+  return string.sub(bytes, 1, body + 52)
+    .. u32(1)
+    .. i32(-1)
+    .. boneData
+    .. string.sub(bytes, body + 61)
+end
+
+--- A root node followed by a copy of itself that nothing links to: a save never writes one, so
+--- the copy is spliced in before the roots and the record count raised.
+local function unreachable(): (string, string)
+  local file = nif.new()
+  file.roots = { file:insert { type = 'NiNode', name = 'Root' } }
+
+  local bytes = buffer.tostring(file:save())
+  local opened = nif.open(bytes)
+  local node = string.sub(bytes, opened.starts[1] + 1, opened.rootsAt)
+  return string.sub(bytes, 1, 44) .. u32(2) .. node .. node .. string.sub(bytes, opened.rootsAt + 1),
+    bytes
+end
+
+--- A report without its header, which the header cases pin.
+local function findings(name: string, data: buffer | string): check.Report
+  local report = check.check(name, data)
+  report.header = nil
+  return report
+end
+
+local NoStats: check.Stats = {
+  records = 0,
+  reachableRecords = 0,
+  nodes = 0,
+  shapes = 0,
+  vertices = 0,
+  triangles = 0,
+  collisionTriangles = 0,
+  controllers = 0,
+  embeddedTextures = 0,
+  embeddedTextureBytes = 0,
+  skinned = false,
+}
+
+local function stats(counts: { [string]: number | boolean }): check.Stats
+  local made = table.clone(NoStats) :: any
+  for key, value in counts do
+    made[key] = value
+  end
+
+  return made
 end
 
 suite.describe('the module', function()
@@ -1493,6 +1600,944 @@ suite.describe('@nif/gamebryo', function()
       expect(observed).toBe(Golden[`fixture/{asset.name}/gamebryo`])
     end)
   end
+end)
+
+suite.describe('@nif/scene', function()
+  suite.it(
+    'builds random_objects.nif: 11 nodes, 8 drawables over 7 geometries, 2 materials',
+    function()
+      local file = nif.open(RandomObjects)
+      local built = scene.build(file)
+      expect(scene.dump(built)).toBe(support.goldenText 'random_objects.scene.txt')
+      expect(#built.nodes).toBe(11)
+      expect(#built.drawables).toBe(8)
+      expect(#built.geometries).toBe(7)
+      expect(#built.materials).toBe(2)
+      expect(built.textures).toEqual {}
+      expect(built.skins).toEqual {}
+      expect(built.skinBones).toEqual {}
+      expect(built.issues).toEqual {}
+
+      local root = built.nodes[1]
+      expect(root.source).toBe(0)
+      expect(root.name).toBe 'random_objects.nif'
+      expect(root.parent).toBeNil()
+      expect(root.subtreeEnd).toBe(11)
+
+      local cone = built.nodes[2]
+      expect(cone.source).toBe(1)
+      expect(cone.recordType).toBe 'NiTriShape'
+      expect(cone.name).toBe 'Cone'
+      expect(cone.parent).toBe(0)
+      expect(cone.subtreeEnd).toBe(2)
+      expect(cone.billboard).toBe(false)
+      expect(cone.visibility).toBe 'Visible'
+      expect(cone['local'][4]).toBe(
+        vector.create(-276.1847839355469, -88.8243179321289, 127.00479125976562)
+      )
+      expect(cone.world).toEqual(cone['local'])
+
+      -- `Empty 1` holds `Cube` and `Empty 2`, which holds `Sphere`.
+      expect(built.nodes[3].subtreeEnd).toBe(6)
+      expect(built.nodes[5].parent).toBe(2)
+      expect(built.nodes[6].parent).toBe(4)
+      expect(built.nodes[6].name).toBe 'Sphere'
+
+      -- `Suzanne1` and `Suzanne2` share one data record, so one geometry.
+      expect(built.drawables[4]).toEqual { node = 6, geometry = 3, material = 0, layer = 'Opaque' }
+      expect(built.drawables[5]).toEqual { node = 7, geometry = 3, material = 0, layer = 'Opaque' }
+      expect(built.drawables[8]).toEqual { node = 10, geometry = 6, material = 1, layer = 'Opaque' }
+      expect(built.geometries[1]).toEqual {
+        source = 2,
+        recordType = 'NiTriShapeData',
+        vertices = { 0, 128 },
+        indices = { 0, 186 },
+        firstUv = 0,
+        uvSets = 1,
+        hasNormals = true,
+        hasColors = false,
+        bound = { center = vector.zero, radius = 141.42135620117188 },
+      }
+      expect(built.geometries[6].vertices).toEqual { 6505, 6513 }
+      expect(built.geometries[6].uvSets).toBe(0)
+      expect(built.geometries[6].hasNormals).toBe(false)
+
+      local wire = built.materials[2]
+      expect(wire.sources).toEqual { material = 16, wireframe = 15 }
+      expect(wire.wireframe).toBe(true)
+      expect(wire.ambient).toBe(vector.create(1, 0, 0))
+      expect(wire.emissive).toBe(vector.create(1, 0, 0))
+      expect(wire.specular).toBe(vector.zero)
+      expect(wire.storedSpecular).toEqual {
+        color = vector.create(1, 0, 0),
+        glossiness = 0,
+        enabled = true,
+      }
+      expect(wire.depth).toEqual { test = true, write = true }
+      expect(wire.cull).toBe 'Back'
+      expect(built.materials[1].sources).toEqual {}
+      expect(built.materials[1].wireframe).toBe(false)
+    end
+  )
+
+  suite.it('packs geometry into buffers sized by what the shapes hold', function()
+    local buffers = scene.build(nif.open(RandomObjects)).buffers
+
+    -- 128 + 24 + 1984 + 2065 + 2304 + 8 + 240 vertices, three indices for each of 3246
+    -- triangles, and a UV for every vertex but the last two geometries'.
+    expect(buffers.vertexCount).toBe(6753)
+    expect(buffers.indexCount).toBe(9738)
+    expect(buffers.uvCount).toBe(6505)
+    expect(buffers.weightCount).toBe(0)
+    expect(buffer.len(buffers.positions)).toBe(6753 * 12)
+    expect(buffer.len(buffers.normals)).toBe(6753 * 12)
+    expect(buffer.len(buffers.colors)).toBe(6753 * 16)
+    expect(buffer.len(buffers.uvs)).toBe(6505 * 8)
+    expect(buffer.len(buffers.indices)).toBe(9738 * 2)
+    expect(buffer.len(buffers.skinVertices)).toBe(0)
+    expect(buffer.len(buffers.skinWeights)).toBe(0)
+
+    -- The cone's first vertex, and the unit cube's first triangle.
+    expect(buffer.readf32(buffers.positions, 0)).toBe(0)
+    expect(buffer.readf32(buffers.positions, 4)).toBe(100)
+    expect(buffer.readf32(buffers.positions, 8)).toBe(-100)
+    expect(buffer.readf32(buffers.positions, 6505 * 12)).toBe(-0.5)
+
+    local cubeIndices = (9738 - 240 - 36) * 2
+    expect(buffer.readu16(buffers.indices, cubeIndices)).toBe(0)
+    expect(buffer.readu16(buffers.indices, cubeIndices + 2)).toBe(2)
+    expect(buffer.readu16(buffers.indices, cubeIndices + 4)).toBe(1)
+  end)
+
+  suite.it('builds all_types.nif, listing what it doesn\'t translate', function()
+    local built = scene.build(nif.open(AllTypes))
+    expect(scene.dump(built)).toBe(support.goldenText 'all_types.scene.txt')
+    expect(#built.nodes).toBe(27)
+    expect(#built.drawables).toBe(2)
+    expect(#built.geometries).toBe(2)
+    expect(#built.materials).toBe(1)
+    expect(built.nodes[13].recordType).toBe 'NiBillboardNode'
+    expect(built.nodes[13].billboard).toBe(true)
+    expect(built.nodes[18].recordType).toBe 'RootCollisionNode'
+    expect(built.nodes[18].visibility).toBe 'Collision'
+    expect(built.nodes[7].name).toBe 'Scene Root'
+    expect(built.nodes[7].subtreeEnd).toBe(26)
+    expect(built.geometries[1].recordType).toBe 'NiTriShapeDynamicData'
+    expect(built.buffers.vertexCount).toBe(8)
+    expect(built.buffers.indexCount).toBe(12)
+
+    local kinds: { [string]: number } = {}
+    for _, issue in built.issues do
+      kinds[issue.kind] = (kinds[issue.kind] or 0) + 1
+    end
+
+    expect(kinds).toEqual {
+      NotSceneObject = 15,
+      Effect = 5,
+      Controller = 14,
+      UnsupportedNode = 3,
+      UnsupportedGeometry = 4,
+      EmptyGeometry = 1,
+    }
+
+    expect(built.issues[1]).toEqual {
+      source = 1,
+      recordType = 'NiBltSource',
+      kind = 'NotSceneObject',
+    }
+    expect(scene.issueText(built.issues[1])).toBe 'root isn\'t a scene object'
+    expect(scene.issueText(built.issues[10])).toBe 'dynamic effect not translated'
+  end)
+
+  suite.it('gives a built shape its texture and material, and marks what OpenMW hides', function()
+    local built = scene.build(nif.open(Scenarios['shape']()))
+    expect(#built.nodes).toBe(2)
+    expect(built.textures).toEqual {
+      { source = 2, kind = 'external', path = 'textures\\tx_a.dds' },
+    }
+
+    expect(built.drawables).toEqual {
+      { node = 1, geometry = 0, material = 0, layer = 'Opaque' },
+    }
+
+    local material = built.materials[1]
+    expect(material.sources).toEqual { texturing = 3, material = 4 }
+    expect(material.baseTexture).toEqual {
+      texture = 0,
+      uvSet = 0,
+      clamp = 'WrapSWrapT',
+      filter = 'Trilerp',
+    }
+    expect(material.alpha).toBe(0.5)
+    expect(built.geometries[1].uvSets).toBe(2)
+    expect(built.geometries[1].hasColors).toBe(true)
+    expect(built.buffers.uvCount).toBe(10)
+
+    -- The shape's transform: twice a quarter turn about z, at (1, 2, 3).
+    expect(built.nodes[2].world).toEqual {
+      vector.create(0, 2, 0),
+      vector.create(-2, 0, 0),
+      vector.create(0, 0, 2),
+      vector.create(1, 2, 3),
+    }
+
+    -- Until `fix` adds the root's "RCN" and "MRK" string data, OpenMW draws both.
+    local file = defects()
+    local drawn = scene.build(file)
+    expect(drawn.nodes[3].recordType).toBe 'RootCollisionNode'
+    expect(drawn.nodes[3].visibility).toBe 'Visible'
+    expect(drawn.nodes[4].name).toBe 'Tri EditorMarker 0'
+    expect(drawn.nodes[4].visibility).toBe 'Visible'
+
+    fix.fix(file)
+
+    local hidden = scene.build(file)
+    expect(hidden.nodes[3].visibility).toBe 'Collision'
+    expect(hidden.nodes[4].visibility).toBe 'EditorMarker'
+  end)
+
+  suite.it('reads a skin: its bones, bind transforms, and weights', function()
+    -- As built, the bone weights a vertex the shape doesn't have, so the skin is left off.
+    local file = nif.open(skinned())
+    local unfit = scene.build(file)
+    expect(unfit.drawables).toEqual { { node = 2, geometry = 0, material = 0, layer = 'Opaque' } }
+    expect(unfit.skins).toEqual {}
+    expect(unfit.issues).toEqual {
+      { source = 3, recordType = 'NiSkinInstance', kind = 'SkinMismatch' },
+    }
+
+    fix.fix(file)
+
+    local built = scene.build(file)
+    expect(built.issues).toEqual {}
+    expect(built.drawables).toEqual {
+      { node = 2, geometry = 0, material = 0, skin = 0, layer = 'Opaque' },
+    }
+
+    local identity = {
+      vector.create(1, 0, 0),
+      vector.create(0, 1, 0),
+      vector.create(0, 0, 1),
+      vector.zero,
+    }
+
+    expect(built.skins).toEqual {
+      { source = 3, data = 2, root = 0, transform = identity, bones = { 0, 1 } },
+    }
+
+    expect(built.skinBones).toEqual {
+      {
+        source = 1,
+        node = 1,
+        bind = identity,
+        bound = { center = vector.zero, radius = 0 },
+        weights = { 0, 2 },
+      },
+    }
+
+    expect(built.buffers.weightCount).toBe(2)
+    expect(buffer.len(built.buffers.skinVertices)).toBe(4)
+    expect(buffer.len(built.buffers.skinWeights)).toBe(8)
+    expect(buffer.readu16(built.buffers.skinVertices, 2)).toBe(2)
+    expect(buffer.readf32(built.buffers.skinWeights, 4)).toBe(0.5)
+  end)
+
+  suite.it('words issues as jess-nif\'s dump does, and dumps an empty scene', function()
+    local function text(issue: { [string]: unknown }): string return scene.issueText(issue :: any) end
+
+    expect(text { kind = 'MissingLink', field = 'geometry_data', target = 9 }).toBe 'geometry_data links missing record 9'
+    expect(text { kind = 'WrongLinkType', field = 'skin', found = 'NiNode' }).toBe 'skin links a NiNode'
+    expect(text { kind = 'TextureSlot', slot = 'gloss' }).toBe 'gloss texture not translated'
+    expect(text { kind = 'Cycle' }).toBe 'cycle: the node is its own ancestor'
+    expect(text { kind = 'Mystery' }).toBe 'Mystery'
+    expect(scene.maxSceneNodes).toBe(1048576)
+
+    local empty = scene.build(nif.new())
+    expect(empty.nodes).toEqual {}
+    expect(empty.buffers.vertexCount).toBe(0)
+    expect(scene.dump(empty)).toBe 'nodes:\ndrawables:\ngeometries:\nmaterials:\ntextures:\nskins:\nissues:\n'
+  end)
+
+  suite.it('reports a link to a record that isn\'t there and one of the wrong type', function()
+    local file = nif.new()
+    local root = file:insert { type = 'NiNode', name = 'Root' }
+    file:attach(root, file:insert { type = 'NiTriShape', name = 'No data', geometryData = 40 })
+    file:attach(root, file:insert { type = 'NiTriShape', name = 'Wrong data', geometryData = root })
+    file.roots = { root }
+
+    local built = scene.build(file)
+    expect(#built.nodes).toBe(3)
+    expect(built.drawables).toEqual {}
+    expect(built.issues).toEqual {
+      {
+        source = 1,
+        recordType = 'NiTriShape',
+        kind = 'MissingLink',
+        field = 'geometry_data',
+        target = 40,
+      },
+      {
+        source = 2,
+        recordType = 'NiTriShape',
+        kind = 'WrongLinkType',
+        field = 'geometry_data',
+        found = 'NiNode',
+      },
+    }
+  end)
+
+  for _, asset in Assets do
+    suite.it(`gives jess-nif's answer for {asset.name}, and leaves its save alone`, function()
+      local file = nif.open(buffer.fromstring(asset.bytes))
+      local observed =
+        support.digest(support.attempt(function(): unknown return scene.build(file) end))
+      expect(observed).toBe(Golden[`fixture/{asset.name}/scene`])
+      expect(difference(saved(file), asset.bytes)).toBeNil()
+    end)
+  end
+end)
+
+suite.describe('@nif/info', function()
+  suite.it('counts record types', function()
+    expect(info.recordTypeCounts(nif.open(RandomObjects))).toEqual {
+      NiNode = 3,
+      NiTriShape = 8,
+      NiTriShapeData = 7,
+      NiWireframeProperty = 1,
+      NiMaterialProperty = 1,
+    }
+
+    local counts = info.recordTypeCounts(nif.open(AllTypes))
+    local types, total = 0, 0
+    for _, count in counts do
+      types += 1
+      total += count
+    end
+
+    expect(types).toBe(78)
+    expect(total).toBe(85)
+    expect(counts.NiNode).toBe(3)
+    expect(counts.NiParticleSystemController).toBe(3)
+    expect(counts.NiScreenPolygon).toBe(2)
+    expect(counts.NiSourceTexture).toBe(2)
+    expect(counts.NiTriShape).toBe(2)
+    expect(counts.NiBltSource).toBe(1)
+    expect(info.recordTypeCounts(nif.new())).toEqual {}
+  end)
+
+  suite.it('lays out random_objects.nif as a tree of nodes and shapes', function()
+    local function shape(
+      index: number,
+      name: string,
+      data: number,
+      vertices: number,
+      triangles: number
+    )
+      return {
+        index = index,
+        type = 'NiTriShape',
+        name = name,
+        shape = {
+          data = { index = data, type = 'NiTriShapeData' },
+          vertices = vertices,
+          triangles = triangles,
+        },
+      }
+    end
+
+    local properties = {
+      { index = 15, type = 'NiWireframeProperty' },
+      { index = 16, type = 'NiMaterialProperty' },
+    }
+
+    local unitCube = shape(14, 'unitCube', 17, 8, 12) :: any
+    unitCube.properties = properties
+
+    local unitSphere = shape(18, 'unitSphere', 19, 240, 80) :: any
+    unitSphere.properties = properties
+
+    expect(info.sceneTree(nif.open(RandomObjects))).toEqual {
+      {
+        index = 0,
+        type = 'NiNode',
+        name = 'random_objects.nif',
+        children = {
+          shape(1, 'Cone', 2, 128, 62),
+          {
+            index = 3,
+            type = 'NiNode',
+            name = 'Empty 1',
+            children = {
+              shape(4, 'Cube', 5, 24, 12),
+              {
+                index = 6,
+                type = 'NiNode',
+                name = 'Empty 2',
+                children = { shape(7, 'Sphere', 8, 1984, 960) },
+              },
+            },
+          },
+          shape(9, 'Suzanne1', 10, 2065, 968),
+          shape(11, 'Suzanne2', 10, 2065, 968),
+          shape(12, 'Torus', 13, 2304, 1152),
+          unitCube,
+          unitSphere,
+        },
+      },
+    }
+  end)
+
+  suite.it('lists all_types.nif\'s 23 roots with controllers, extra data, and geometry', function()
+    local tree = info.sceneTree(nif.open(AllTypes))
+    expect(#tree).toBe(23)
+    expect(tree[1]).toEqual { index = 0, type = 'NiNode', name = '' }
+    expect(tree[2]).toEqual { index = 1, type = 'NiBltSource', name = '' }
+    expect(tree[17]).toEqual { index = 16, type = 'NiSequenceStreamHelper', name = '' }
+    expect(tree[23]).toEqual { index = 84, type = 'NiNode', name = '' }
+
+    local root = tree[19]
+    expect(root.index).toBe(18)
+    expect(root.name).toBe 'Scene Root'
+    expect(root.hidden).toBeNil()
+    expect(root.controllers).toEqual {
+      { index = 25, type = 'NiFlipController', active = false },
+      { index = 26, type = 'NiKeyframeController', active = false },
+      { index = 27, type = 'NiAlphaController', active = false },
+      { index = 28, type = 'NiRollController', active = false },
+      { index = 29, type = 'NiLightColorController', active = false },
+      { index = 30, type = 'NiLookAtController', active = false },
+      { index = 31, type = 'NiMaterialColorController', active = false },
+    }
+
+    expect(root.extraData).toEqual {
+      { index = 19, type = 'NiExtraData' },
+      { index = 20, type = 'NiStringExtraData', value = 'Hello World' },
+      { index = 21, type = 'NiTextKeyExtraData' },
+      { index = 22, type = 'NiVertWeightsExtraData' },
+      { index = 23, type = 'BrickNiExtraData' },
+      { index = 24, type = 'TES3ObjectExtraData' },
+    }
+
+    local children = root.children :: { info.TreeNode }
+    expect(#children).toBe(19)
+    expect(children[1]).toEqual { index = 33, type = 'NiCamera', name = '' }
+    expect(children[14]).toEqual {
+      index = 54,
+      type = 'NiTriShape',
+      name = 'dynamic',
+      controllers = {
+        { index = 55, type = 'NiPathController', active = false },
+        { index = 56, type = 'NiUVController', active = false },
+        { index = 57, type = 'NiVisController', active = false },
+      },
+      shape = { data = { index = 60, type = 'NiTriShapeDynamicData' }, vertices = 4, triangles = 2 },
+    }
+
+    expect(children[15].shape).toEqual {
+      data = { index = 62, type = 'NiLinesData' },
+      vertices = 4,
+      triangles = 0,
+    }
+
+    expect(children[19]).toEqual {
+      index = 77,
+      type = 'NiTriStrips',
+      name = 'strips',
+      shape = { data = { index = 78, type = 'NiTriStripsData' }, vertices = 4, triangles = 6 },
+    }
+  end)
+
+  suite.it('shows a shape\'s skin, hidden nodes, and string data', function()
+    local tree = info.sceneTree(nif.open(skinned()))
+    expect((tree[1].children :: { info.TreeNode })[2]).toEqual {
+      index = 5,
+      type = 'NiTriShape',
+      name = 'Skinned',
+      shape = {
+        data = { index = 4, type = 'NiTriShapeData' },
+        vertices = 3,
+        triangles = 1,
+        skin = 3,
+      },
+    }
+
+    local file = defects()
+    local inner = file:record(2) :: any
+    inner.flags = 1
+    tree = info.sceneTree(file)
+    expect(tree[1].extraData).toEqual { { index = 1, type = 'NiStringExtraData', value = 'NCc' } }
+    expect((tree[1].children :: { info.TreeNode })[1].hidden).toBe(true)
+  end)
+
+  suite.it('reads the same counts and tree from the multi-version reader\'s records', function()
+    local file = gamebryo.open(RandomObjects)
+    local model = nif.open(RandomObjects)
+    expect(info.fileTypeCounts(file)).toEqual(info.recordTypeCounts(model))
+    expect(info.fileSceneTree(file)).toEqual(info.sceneTree(model))
+
+    local skyrim = gamebryo.open(SkyrimFile)
+    expect(info.fileTypeCounts(skyrim)).toEqual { NiNode = 1 }
+    expect(info.fileSceneTree(skyrim)).toEqual { { index = 0, type = 'NiNode', name = 'Scene Root' } }
+  end)
+
+  suite.it('stops a tree at its depth limit', function()
+    expect(info.maxTreeDepth).toBe(256)
+
+    local file = nif.new()
+    local parent = file:insert { type = 'NiNode', name = 'level 1' }
+    file.roots = { parent }
+    for level = 2, 300 do
+      local child = file:insert { type = 'NiNode', name = `level {level}` }
+      file:attach(parent, child)
+      parent = child
+    end
+
+    local node, depth = info.sceneTree(file)[1], 1
+    while node.children do
+      node, depth = node.children[1], depth + 1
+    end
+
+    expect(depth).toBe(257)
+    expect(node).toEqual { index = 256, type = 'NiNode', name = '' }
+  end)
+
+  for _, asset in Assets do
+    suite.it(`gives jess-nif's answer for {asset.name}, and leaves its save alone`, function()
+      local file = nif.open(buffer.fromstring(asset.bytes))
+      local observed = support.digest(
+        support.attempt(
+          function(): unknown
+            return { counts = info.recordTypeCounts(file), tree = info.sceneTree(file) }
+          end
+        )
+      )
+      expect(observed).toBe(Golden[`fixture/{asset.name}/info`])
+      expect(difference(saved(file), asset.bytes)).toBeNil()
+    end)
+  end
+end)
+
+suite.describe('@nif/check', function()
+  suite.it('finds nothing wrong with random_objects.nif and counts what it draws', function()
+    local report = check.check('meshes/random_objects.nif', RandomObjects)
+    expect(report.header).toEqual(header.parse(buffer.fromstring(RandomObjects)))
+    expect(report.deep).toBe(true)
+    expect(report.findings).toEqual {}
+    expect(report.textures).toEqual {}
+
+    -- Eight shapes over seven data records: the vertices and triangles count what is drawn.
+    expect(report.stats).toEqual(stats {
+      records = 20,
+      reachableRecords = 20,
+      nodes = 3,
+      shapes = 8,
+      vertices = 8818,
+      triangles = 4214,
+      collisionTriangles = 4214,
+    })
+    expect(report.collision).toEqual { source = 'render_geometry', hidesMarkers = false }
+    expect(check.check('meshes/random_objects.nif', buffer.fromstring(RandomObjects))).toEqual(
+      report
+    )
+  end)
+
+  suite.it('says OpenMW won\'t load all_types.nif, and why', function()
+    local report = check.check('all_types.nif', AllTypes)
+    expect((report.header :: header.Header).recordCount).toBe(85)
+    expect(report.deep).toBe(false)
+    expect(report.stats).toBeNil()
+    expect(report.collision).toBeNil()
+    expect(report.textures).toEqual {}
+    expect(report.findings).toEqual {
+      {
+        severity = 'wont_load',
+        code = 'unknown_record_type',
+        message = 'Unknown record type NiBltSource',
+        record = 1,
+      },
+    }
+  end)
+
+  suite.it(
+    'checks a .kf as an animation',
+    function()
+      expect(check.check('random_objects.kf', RandomObjects).findings).toEqual {
+        {
+          severity = 'broken',
+          code = 'kf_without_sequence',
+          message = 'Found no NiSequenceStreamHelper root record, so no animation loads',
+        },
+      }
+    end
+  )
+
+  suite.it('reports a header it can\'t read, and nothing else', function()
+    expect(check.check('empty.nif', '')).toEqual {
+      deep = false,
+      textures = {},
+      findings = {
+        {
+          severity = 'wont_load',
+          code = 'invalid_header',
+          message = 'truncated version line at offset 0',
+        },
+      },
+    }
+
+    expect(check.check('junk.nif', 'junk\nmore').findings).toEqual {
+      { severity = 'wont_load', code = 'invalid_header', message = 'Invalid NIF header: junk' },
+    }
+  end)
+
+  suite.it('reports why the reader refuses a file', function()
+    expect(findings('cut.nif', string.sub(RandomObjects, 1, 1000))).toEqual {
+      deep = false,
+      textures = {},
+      findings = {
+        {
+          severity = 'wont_load',
+          code = 'unreadable_record',
+          message = 'Trying to read more than stream size: 1536 max=1000',
+          record = 2,
+        },
+      },
+    }
+
+    local wrong = nif.new()
+    local root = wrong:insert { type = 'NiNode', name = 'Root' }
+    wrong:attach(root, wrong:insert { type = 'NiTriShapeData' })
+    wrong.roots = { root }
+    expect(findings('wrong.nif', wrong:save()).findings).toEqual {
+      {
+        severity = 'wont_load',
+        code = 'wrong_link_type',
+        message = 'Failed to cast record pointer to NiAVObject: record 1 is a NiTriShapeData',
+        record = 0,
+      },
+    }
+
+    expect(findings('empty.nif', nif.new():save()).findings).toEqual {
+      { severity = 'wont_load', code = 'no_root_nodes', message = 'Found no root nodes' },
+    }
+  end)
+
+  suite.it('finds a nested collision node, a visible editor marker, and a lowercase NCC', function()
+    local report = findings('defects.nif', defects():save())
+    expect(report.deep).toBe(true)
+    expect(report.findings).toEqual {
+      {
+        severity = 'broken',
+        code = 'visible_editor_marker',
+        message = '"Tri EditorMarker 0" draws in game because the root has no "MRK" string data',
+        record = 5,
+      },
+      {
+        severity = 'collision',
+        code = 'lowercase_ncc',
+        message = '"NCc" turns collision off entirely; only an uppercase "NCC" keeps camera collision',
+        record = 1,
+      },
+    }
+
+    local nested = nif.new()
+    local root = nested:insert { type = 'NiNode', name = 'Root' }
+    local inner = nested:insert { type = 'NiNode', name = 'Inner' }
+    nested:attach(root, inner)
+    nested:attach(inner, nested:insert { type = 'RootCollisionNode', name = 'RootCollisionNode' })
+    nested.roots = { root }
+    report = findings('nested.nif', nested:save())
+    expect(report.collision).toEqual { source = 'render_geometry', hidesMarkers = false }
+    expect(report.findings).toEqual {
+      {
+        severity = 'broken',
+        code = 'stray_root_collision_node',
+        message = 'OpenMW doesn\'t find this RootCollisionNode, since it isn\'t a child of the root and the root has no "RCN" string data, so it draws and the render geometry collides too',
+        record = 2,
+      },
+    }
+  end)
+
+  suite.it('finds skin weights past the shape\'s vertices and records no root reaches', function()
+    local report = findings('skinned.nif', skinned())
+    expect(report.findings).toEqual {
+      {
+        severity = 'wont_load',
+        code = 'skin_weight_out_of_range',
+        message = 'the skin weights vertex 7, but the shape has 3 vertices',
+        record = 5,
+      },
+    }
+
+    expect(report.stats).toEqual(stats {
+      records = 6,
+      reachableRecords = 6,
+      nodes = 2,
+      shapes = 1,
+      vertices = 3,
+      triangles = 1,
+      collisionTriangles = 1,
+      skinned = true,
+    })
+
+    report = findings('stray.nif', (unreachable()))
+    expect(report.findings).toEqual {
+      {
+        severity = 'performance',
+        code = 'unreachable_records',
+        message = '1 record isn\'t reachable from any root and is loaded for nothing',
+      },
+    }
+    expect(report.stats).toEqual(stats { records = 2, reachableRecords = 1, nodes = 1 })
+  end)
+
+  suite.it('lists the textures a file names, as it spells them', function()
+    local report = findings('shape.nif', Scenarios['shape']())
+    expect(report.textures).toEqual { 'textures\\tx_a.dds' }
+    expect((report.stats :: check.Stats).shapes).toBe(1)
+    expect((report.stats :: check.Stats).vertices).toBe(5)
+    expect((report.stats :: check.Stats).triangles).toBe(3)
+  end)
+
+  suite.it('checks later versions through their headers and the multi-version reader', function()
+    local report = findings('skyrim.nif', SkyrimFile)
+    expect(report).toEqual {
+      deep = true,
+      textures = {},
+      collision = { source = 'none', hidesMarkers = false },
+      stats = stats { records = 1, reachableRecords = 1, nodes = 1 },
+      findings = {
+        {
+          severity = 'info',
+          code = 'root_transform_ignored',
+          message = 'the root node "Scene Root" has a transform, which OpenMW ignores like Morrowind does',
+          record = 0,
+        },
+      },
+    }
+
+    local unknown = string.gsub(SkyrimFile, 'NiNode', 'XiNode', 1)
+    expect(findings('unknown.nif', unknown)).toEqual {
+      deep = false,
+      textures = {},
+      findings = {
+        {
+          severity = 'wont_load',
+          code = 'unknown_record_type',
+          message = 'Unknown record type XiNode',
+          record = 0,
+        },
+      },
+    }
+
+    local badRoot = SkyrimHeader .. SkyrimNode .. u32(1) .. i32(5)
+    expect(findings('root.nif', badRoot).findings).toEqual {
+      { severity = 'wont_load', code = 'no_root_nodes', message = 'Found no root nodes' },
+      {
+        severity = 'broken',
+        code = 'root_out_of_range',
+        message = 'Root 0 does not point to a record: index 5',
+      },
+      -- Record 0's transform is discarded whether or not a root reaches it.
+      {
+        severity = 'info',
+        code = 'root_transform_ignored',
+        message = 'the root node "Scene Root" has a transform, which OpenMW ignores like Morrowind does',
+        record = 0,
+      },
+    }
+
+    -- A Morrowind file has no record sizes to find its roots by, so they're checked once read.
+    local plain = nif.new()
+    plain.roots = { plain:insert { type = 'NiNode', name = 'Root' } }
+
+    local bytes = saved(plain)
+    expect(findings('root.nif', string.sub(bytes, 1, #bytes - 4) .. i32(5)).findings).toEqual {
+      { severity = 'wont_load', code = 'no_root_nodes', message = 'Found no root nodes' },
+      {
+        severity = 'broken',
+        code = 'root_out_of_range',
+        message = 'Root 0 does not point to a record, so it\'s skipped',
+      },
+      {
+        severity = 'performance',
+        code = 'unreachable_records',
+        message = '1 record isn\'t reachable from any root and is loaded for nothing',
+      },
+    }
+
+    -- The node's size is the `u32` at offset 95; eight bytes more puts the roots past the end.
+    expect(string.sub(SkyrimFile, 96, 99)).toBe(u32(#SkyrimNode))
+
+    local missized = string.sub(SkyrimFile, 1, 95)
+      .. u32(#SkyrimNode + 8)
+      .. string.sub(SkyrimFile, 100)
+    expect(findings('sizes.nif', missized).findings).toEqual {
+      {
+        severity = 'info',
+        code = 'record_sizes_mismatch',
+        message = 'the header\'s record sizes don\'t add up to the file; OpenMW doesn\'t use them, but the roots can\'t be checked',
+      },
+      {
+        severity = 'info',
+        code = 'root_transform_ignored',
+        message = 'the root node "Scene Root" has a transform, which OpenMW ignores like Morrowind does',
+        record = 0,
+      },
+    }
+
+    -- A root list cut short is the reader's to refuse; its wording isn't pinned.
+    local cut = findings('cut.nif', string.sub(SkyrimFile, 1, #SkyrimFile - 1))
+    expect(cut.deep).toBe(false)
+    expect(cut.findings[1].severity).toBe 'wont_load'
+    expect(cut.findings[1].code).toBe 'unreadable_record'
+  end)
+
+  for _, asset in Assets do
+    suite.it(`gives jess-nif's answer for {asset.name}`, function()
+      local observed = support.digest(
+        support.attempt(
+          function(): unknown return check.check(asset.name, buffer.fromstring(asset.bytes)) end
+        )
+      )
+      expect(observed).toBe(Golden[`fixture/{asset.name}/check`])
+    end)
+  end
+end)
+
+suite.describe('@nif/fix', function()
+  suite.it('lists its kinds in the order they apply', function()
+    expect(fix.kinds).toEqual { 'rcn', 'ncc', 'markers', 'skinWeights', 'unreachable' }
+    expect(table.isfrozen(fix.kinds)).toBe(true)
+  end)
+
+  for _, asset in Assets do
+    suite.it(`finds nothing to fix in {asset.name}, and gives jess-nif's answer`, function()
+      local file = nif.open(buffer.fromstring(asset.bytes))
+      local fixed = fix.fix(file)
+      expect(fixed).toEqual {}
+      expect(difference(saved(file), asset.bytes)).toBeNil()
+      expect(support.digest { fixed = fixed, saved = file:save() }).toBe(
+        Golden[`fixture/{asset.name}/fix`]
+      )
+    end)
+  end
+
+  suite.it('repairs a nested collision node, an editor marker, and a lowercase NCC', function()
+    local file = defects()
+    file:insert { type = 'NiNode', name = 'Stray' }
+    expect(fix.fix(file)).toEqual {
+      {
+        fix = 'ncc',
+        message = '"NCc" is now "NCC", so the camera still collides',
+        record = 1,
+      },
+      {
+        fix = 'rcn',
+        message = 'added "RCN" string data, so OpenMW finds the RootCollisionNode (record 3) under a child node',
+        record = 0,
+      },
+      {
+        fix = 'markers',
+        message = 'added "MRK" string data, so 1 editor marker shape doesn\'t draw in game',
+        record = 0,
+      },
+      { fix = 'unreachable', message = 'dropped 1 record nothing links to' },
+    }
+
+    local repaired = nif.open(file:save())
+    expect(typesOf(repaired)).toBe(
+      'NiNode NiStringExtraData NiNode RootCollisionNode NiTriShapeData NiTriShape'
+        .. ' NiStringExtraData NiStringExtraData'
+    )
+
+    -- The new string data goes first in the root's chain: MRK, then RCN, then what was there.
+    expect((repaired:record(0) :: any).extraData).toBe(7)
+    expect(repaired:record(7)).toEqual {
+      type = 'NiStringExtraData',
+      next = 6,
+      bytesRemaining = 7,
+      value = 'MRK',
+    }
+
+    expect(repaired:record(6)).toEqual {
+      type = 'NiStringExtraData',
+      next = 1,
+      bytesRemaining = 7,
+      value = 'RCN',
+    }
+    expect((repaired:record(1) :: any).value).toBe 'NCC'
+    expect(fix.fix(repaired)).toEqual {}
+
+    local report = findings('repaired.nif', repaired:save())
+    for _, finding in report.findings do
+      expect(finding.code == 'lowercase_ncc').toBe(false)
+      expect(finding.code == 'visible_editor_marker').toBe(false)
+      expect(finding.code == 'stray_root_collision_node').toBe(false)
+    end
+
+    expect((report.collision :: check.Collision).hidesMarkers).toBe(true)
+  end)
+
+  suite.it('applies only the kinds asked for', function()
+    local file = defects()
+    expect(fix.fix(file, { 'ncc' })).toEqual {
+      {
+        fix = 'ncc',
+        message = '"NCc" is now "NCC", so the camera still collides',
+        record = 1,
+      },
+    }
+    expect(file.count).toBe(6)
+    expect(fix.fix(file, { 'markers' })).toEqual {
+      {
+        fix = 'markers',
+        message = 'added "MRK" string data, so 1 editor marker shape doesn\'t draw in game',
+        record = 0,
+      },
+    }
+    expect(file.count).toBe(7)
+    expect(fix.fix(file, {})).toEqual {}
+  end)
+
+  suite.it('drops skin weights for vertices the shape doesn\'t have', function()
+    local bytes = skinned()
+    local file = nif.open(bytes)
+    local weights = (file:record(2) :: any).boneData[1].vertexWeights
+    expect(weights:toTable()).toEqual {
+      vector.create(0, 1, 0),
+      vector.create(2, 0.5, 0),
+      vector.create(7, 0.25, 0),
+    }
+
+    expect(fix.fix(file)).toEqual {
+      {
+        fix = 'skinWeights',
+        message = 'dropped 1 skin weight for vertices past the shape\'s 3',
+        record = 5,
+      },
+    }
+
+    local repaired = saved(file)
+    expect(#repaired).toBe(#bytes - 6)
+    expect((nif.open(repaired):record(2) :: any).boneData[1].vertexWeights:toTable()).toEqual {
+      vector.create(0, 1, 0),
+      vector.create(2, 0.5, 0),
+    }
+    expect(findings('repaired.nif', repaired).findings).toEqual {}
+    expect(fix.fix(nif.open(repaired))).toEqual {}
+  end)
+
+  suite.it('reports the records a save drops for being unreachable', function()
+    local stray, plain = unreachable()
+    local file = nif.open(stray)
+    expect(file.count).toBe(2)
+    expect(fix.fix(file, { 'rcn', 'ncc', 'markers', 'skinWeights' })).toEqual {}
+    expect(fix.fix(file)).toEqual {
+      { fix = 'unreachable', message = 'dropped 1 record nothing links to' },
+    }
+    expect(saved(file)).toBe(plain)
+    expect(findings('plain.nif', plain).findings).toEqual {}
+  end)
 end)
 
 return suite
