@@ -1,4 +1,5 @@
 --!strict
+--!native
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
 -- OpenMW's `components/nif/particle.hpp` values the schema can't state as steps.

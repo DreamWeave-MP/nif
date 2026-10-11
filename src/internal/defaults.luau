@@ -1,4 +1,5 @@
 --!strict
+--!native
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 -- Frozen from the historical jess-nif default records. Do not edit by hand.
 

@@ -1140,6 +1140,7 @@ local function scanModule(): string
   local out: Out = { lines = {}, depth = 0, pending = false }
   lines(out, {
     '--!strict',
+    '--!native',
     '-- SPDX-License-Identifier: MIT OR Apache-2.0',
     Generated,
     '',
@@ -1221,10 +1222,10 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
   end
 
   local out = {
-    '--!nonstrict',
+    '--!strict',
+    '--!native',
     '-- SPDX-License-Identifier: MIT OR Apache-2.0',
     Generated,
-    '-- Not strict: the checker does not know `vector:writef32x3`, which jess installs.',
     '',
   }
 
@@ -1424,6 +1425,7 @@ local function loadModule(): string
   local out: Out = { lines = {}, depth = 0, pending = false }
   lines(out, {
     '--!strict',
+    '--!native',
     '-- SPDX-License-Identifier: MIT OR Apache-2.0',
     Generated,
     '',
@@ -1480,6 +1482,7 @@ local function enums(): string
   for _, line in
     {
       '--!strict',
+      '--!native',
       '-- SPDX-License-Identifier: MIT OR Apache-2.0',
       Generated,
       '',
@@ -1693,6 +1696,7 @@ local function types(): string
   for _, line in
     {
       '--!strict',
+      '--!native',
       '-- SPDX-License-Identifier: MIT OR Apache-2.0',
       Generated,
       '',
@@ -1810,6 +1814,7 @@ local function arrayTypes(): string
   local out: Out = { lines = {}, depth = 0, pending = false }
   lines(out, {
     '--!strict',
+    '--!native',
     '-- SPDX-License-Identifier: MIT OR Apache-2.0',
     Generated,
     '-- The array types, one per element kind, and each kind\'s stride.',
@@ -1894,6 +1899,7 @@ local function arrayAccess(): string
   local out: Out = { lines = {}, depth = 0, pending = false }
   lines(out, {
     '--!strict',
+    '--!native',
     '-- SPDX-License-Identifier: MIT OR Apache-2.0',
     Generated,
     '-- What an array does beyond being read in place: `get`, `set`, and `toTable` for each kind,',
@@ -2014,6 +2020,7 @@ end
 local function classesModule(): string
   local out = {
     '--!strict',
+    '--!native',
     '-- SPDX-License-Identifier: MIT OR Apache-2.0',
     Generated,
     '',
