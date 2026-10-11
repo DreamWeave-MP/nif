@@ -7,7 +7,7 @@ record must be of the class the link names or derive from it.
 ]]
 
 local Classes = require './classes'
-local G = require './stream'
+local Stream = require './stream'
 
 local Parents = Classes.parents
 
@@ -51,11 +51,11 @@ local function link(
 
   local target = records[index + 1]
   if not target then
-    G.fail(`{names[owner + 1]} links to record {index}, past the {#records} records`)
+    Stream.fail(`{names[owner + 1]} links to record {index}, past the {#records} records`)
   end
 
   if not Is[classes[index + 1]][class] then
-    G.fail(`Failed to cast record pointer to {class}: record {index} is a {names[index + 1]}`)
+    Stream.fail(`Failed to cast record pointer to {class}: record {index} is a {names[index + 1]}`)
   end
 end
 
@@ -80,11 +80,13 @@ local function links(
     if index < 0 then continue end
 
     if index >= count then
-      G.fail(`{names[owner + 1]} links to record {index}, past the {count} records`)
+      Stream.fail(`{names[owner + 1]} links to record {index}, past the {count} records`)
     end
 
     if not is[classes[index + 1]][class] then
-      G.fail(`Failed to cast record pointer to {class}: record {index} is a {names[index + 1]}`)
+      Stream.fail(
+        `Failed to cast record pointer to {class}: record {index} is a {names[index + 1]}`
+      )
     end
   end
 end
@@ -97,7 +99,7 @@ local function setNames(list: { string }) names = list end
 local function any(index: number, records: { any })
   if collecting then return end
 
-  if index >= #records then G.fail(`Record index {index} is past the {#records} records`) end
+  if index >= #records then Stream.fail(`Record index {index} is past the {#records} records`) end
 end
 
 --- Every link record `index` holds, by running its class's link pass in collecting mode. The

@@ -26,20 +26,20 @@ local get, is, typeName, push = Base.get, Base.is, Base.typeName, Base.push
 local Constants = Base.constants
 
 --- nifloader.cpp `loadKf`: only `NiSequenceStreamHelper` animations load.
-local function checkKf(c: Checker)
+local function checkKf(checker: Checker)
   local helper: number? = nil
   local sequences = false
-  for _, root in c.file.roots do
-    if root < 0 or root >= #c.records then continue end
+  for _, root in checker.file.roots do
+    if root < 0 or root >= #checker.records then continue end
 
-    if not helper and is(c, root, 'NiSequenceStreamHelper') then helper = root end
+    if not helper and is(checker, root, 'NiSequenceStreamHelper') then helper = root end
 
-    if is(c, root, 'NiControllerSequence') then sequences = true end
+    if is(checker, root, 'NiControllerSequence') then sequences = true end
   end
 
   if not helper then
     push(
-      c,
+      checker,
       'broken',
       'kf_without_sequence',
       nil,
@@ -50,14 +50,14 @@ local function checkKf(c: Checker)
     return
   end
 
-  local net = get(c, helper, 'NiObjectNET')
+  local net = get(checker, helper, 'NiObjectNET')
   if not net then return end
 
-  local extras = Base.extraList(c, net)
+  local extras = Base.extraList(checker, net)
   local first = extras[1]
   if not first then
     push(
-      c,
+      checker,
       'broken',
       'kf_without_text_keys',
       helper,
@@ -66,37 +66,40 @@ local function checkKf(c: Checker)
     return
   end
 
-  if not is(c, first, 'NiTextKeyExtraData') then
+  if not is(checker, first, 'NiTextKeyExtraData') then
     push(
-      c,
+      checker,
       'broken',
       'kf_without_text_keys',
       first,
-      `First extra data was not a NiTextKeyExtraData, but a {typeName(c, first)}`
+      `First extra data was not a NiTextKeyExtraData, but a {typeName(checker, first)}`
     )
     return
   end
 
-  local chain = Base.controllers(c, net.controller)
+  local chain = Base.controllers(checker, net.controller)
   local keyframes = 0
-  for i = 2, math.min(#extras, #chain + 1) do
-    local extra, controller = extras[i], chain[i - 1][1]
-    if not is(c, extra, 'NiStringExtraData') or not is(c, controller, 'NiKeyframeController') then
+  for position = 2, math.min(#extras, #chain + 1) do
+    local extra, controller = extras[position], chain[position - 1][1]
+    if
+      not is(checker, extra, 'NiStringExtraData')
+      or not is(checker, controller, 'NiKeyframeController')
+    then
       push(
-        c,
+        checker,
         'broken',
         'kf_unexpected_pair',
         extra,
-        `Unexpected extra data {typeName(c, extra)} with controller {typeName(c, controller)}; the pair is skipped`
+        `Unexpected extra data {typeName(checker, extra)} with controller {typeName(checker, controller)}; the pair is skipped`
       )
       continue
     end
 
-    local keyframe = get(c, controller, 'NiKeyframeController')
+    local keyframe = get(checker, controller, 'NiKeyframeController')
     local data = keyframe ~= nil and keyframe.data >= 0
     if
-      (data or Base.hasInterpolator(c, controller))
-      and Base.checkInterpolator(c, controller, 'NiTransformInterpolator')
+      (data or Base.hasInterpolator(checker, controller))
+      and Base.checkInterpolator(checker, controller, 'NiTransformInterpolator')
     then
       keyframes += 1
     end
@@ -104,7 +107,7 @@ local function checkKf(c: Checker)
 
   if keyframes == 0 then
     push(
-      c,
+      checker,
       'broken',
       'kf_without_controllers',
       helper,
@@ -113,14 +116,14 @@ local function checkKf(c: Checker)
   end
 end
 
-local function checkPerformance(c: Checker)
-  local stats = c.stats
+local function checkPerformance(checker: Checker)
+  local stats = checker.stats
   -- Later files link records OpenMW reads but never resolves (Havok constraints and actions,
   -- additional geometry data, animation notes), which the reader doesn't follow.
   local unreachable = stats.records - stats.reachableRecords
-  if unreachable > 0 and Base.morrowindRules(c) then
+  if unreachable > 0 and Base.morrowindRules(checker) then
     push(
-      c,
+      checker,
       'performance',
       'unreachable_records',
       nil,
@@ -132,7 +135,7 @@ local function checkPerformance(c: Checker)
 
   if stats.embeddedTextures > 0 then
     push(
-      c,
+      checker,
       'performance',
       'embedded_textures',
       nil,
@@ -142,7 +145,7 @@ local function checkPerformance(c: Checker)
 
   if stats.shapes > Constants.ManyShapes then
     push(
-      c,
+      checker,
       'performance',
       'many_shapes',
       nil,
@@ -151,41 +154,41 @@ local function checkPerformance(c: Checker)
   end
 
   if stats.triangles > Constants.ManyTriangles then
-    push(c, 'performance', 'many_triangles', nil, `{stats.triangles} triangles in one model`)
+    push(checker, 'performance', 'many_triangles', nil, `{stats.triangles} triangles in one model`)
   end
 end
 
-local function run(c: Checker, rootsChecked: boolean)
-  Base.findReachable(c, rootsChecked)
+local function run(checker: Checker, rootsChecked: boolean)
+  Base.findReachable(checker, rootsChecked)
   local roots = {}
-  for _, root in c.file.roots do
-    if root >= 0 and root < #c.records and get(c, root, 'NiAVObject') then
+  for _, root in checker.file.roots do
+    if root >= 0 and root < #checker.records and get(checker, root, 'NiAVObject') then
       table.insert(roots, root)
     end
   end
 
-  if c.kf then
-    checkKf(c)
+  if checker.kf then
+    checkKf(checker)
   elseif #roots == 0 then
     -- nifloader.cpp `load`: throws when no root is an NiAVObject.
-    push(c, 'wont_load', 'no_root_nodes', nil, 'Found no root nodes')
+    push(checker, 'wont_load', 'no_root_nodes', nil, 'Found no root nodes')
   end
 
-  Base.checkRootTransform(c)
+  Base.checkRootTransform(checker)
   for _, root in roots do
-    Base.checkRootStrings(c, root)
-    Scene.walk(c, root, { texturing = nil, root = true })
-    if Base.gamebryoCollision(c) then
-      Collision.checkBsx(c, root)
+    Base.checkRootStrings(checker, root)
+    Scene.walk(checker, root, { texturing = nil, root = true })
+    if Base.gamebryoCollision(checker) then
+      Collision.checkBsx(checker, root)
     else
-      Collision.check(c, root)
+      Collision.check(checker, root)
     end
   end
 
-  Collision.checkBoundingBox(c, roots)
-  Properties.check(c)
-  Properties.collectTextures(c)
-  checkPerformance(c)
+  Collision.checkBoundingBox(checker, roots)
+  Properties.check(checker)
+  Properties.collectTextures(checker)
+  checkPerformance(checker)
 end
 
 --- Checks every record of `file`, read from `name` (`.kf` files are checked as animations), into
@@ -198,7 +201,7 @@ local function check(name: string, file: Reader.File, report: Types.Report)
     if finding.code == 'root_out_of_range' then rootsChecked = true end
   end
 
-  local c: Checker = {
+  local checker: Checker = {
     file = file,
     records = file.records,
     version = file.header.version,
@@ -230,19 +233,19 @@ local function check(name: string, file: Reader.File, report: Types.Report)
   }
 
   for index = 0, #file.records - 1 do
-    local node = get(c, index, 'NiNode')
+    local node = get(checker, index, 'NiNode')
     if not node then continue end
 
     for _, effect in node.effects do
-      if effect >= 0 then c.listedEffects[effect] = true end
+      if effect >= 0 then checker.listedEffects[effect] = true end
     end
   end
 
-  run(c, rootsChecked)
-  table.move(c.findings, 1, #c.findings, #report.findings + 1, report.findings)
-  report.textures = c.textures
-  report.stats = c.stats
-  report.collision = c.collision
+  run(checker, rootsChecked)
+  table.move(checker.findings, 1, #checker.findings, #report.findings + 1, report.findings)
+  report.textures = checker.textures
+  report.stats = checker.stats
+  report.collision = checker.collision
 end
 
 return table.freeze { check = check }

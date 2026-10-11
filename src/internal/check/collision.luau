@@ -28,15 +28,15 @@ end
 --- A `RootCollisionNode` OpenMW doesn't use as the collision shape: rendering only hides it by
 --- its own hidden flag (or as the root's collision node), and collision treats it as visible
 --- geometry.
-local function checkStrayCollisionNode(c: Checker, index: number, hidden: boolean)
-  hidden = hidden or index == c.collisionNode
+local function checkStrayCollisionNode(checker: Checker, index: number, hidden: boolean)
+  hidden = hidden or index == checker.collisionNode
   local severity: Base.Severity, message
-  if Base.gamebryoCollision(c) then
+  if Base.gamebryoCollision(checker) then
     severity = 'collision'
     message = if hidden
       then 'OpenMW doesn\'t use RootCollisionNodes in 10.0.1.0 and later NIFs, so this one collides like the render geometry'
       else 'OpenMW doesn\'t use RootCollisionNodes in 10.0.1.0 and later NIFs, so this one draws and collides like the render geometry'
-  elseif not c.collisionNode then
+  elseif not checker.collisionNode then
     severity = if hidden then 'collision' else 'broken'
     message = if hidden
       then 'OpenMW doesn\'t find this RootCollisionNode, since it isn\'t a child of the root and the root has no "RCN" string data, so the render geometry collides too'
@@ -48,14 +48,14 @@ local function checkStrayCollisionNode(c: Checker, index: number, hidden: boolea
       else 'Extra RootCollisionNode: OpenMW only uses the last one under the root, so this one draws and doesn\'t collide'
   end
 
-  push(c, severity, 'stray_root_collision_node', index, message)
+  push(checker, severity, 'stray_root_collision_node', index, message)
 end
 
 type Pending = { index: number, state: CollisionState }
 
 --- One node of the collision traversal; its children go on `stack`, the first on top.
 local function visit(
-  c: Checker,
+  checker: Checker,
   index: number,
   from: CollisionState,
   inCollisionNode: boolean,
@@ -63,21 +63,21 @@ local function visit(
   seenCount: { number },
   stack: { Pending }
 )
-  local av = get(c, index, 'NiAVObject')
+  local av = get(checker, index, 'NiAVObject')
   if not av or seen[index] then return end
 
   seen[index] = true
   seenCount[1] += 1
-  local kind = recordType(c, index)
+  local kind = recordType(checker, index)
   if not kind then return end
 
   if kind == 'NiCollisionSwitch' and not bit32.btest(av.flags, 0x20) then return end
 
   -- Collision from 10.0.1.0 on uses no RootCollisionNode, so every one is stray.
-  local used = not Base.gamebryoCollision(c) and index == c.collisionNode
+  local used = not Base.gamebryoCollision(checker) and index == checker.collisionNode
   local hiddenFlag = bit32.btest(av.flags, 1)
   if kind == 'RootCollisionNode' and not used then
-    checkStrayCollisionNode(c, index, hiddenFlag or from.hidden)
+    checkStrayCollisionNode(checker, index, hiddenFlag or from.hidden)
   end
 
   local name = av.name
@@ -87,7 +87,7 @@ local function visit(
     boundingBox = from.boundingBox,
   }
 
-  if Base.morrowindRules(c) then
+  if Base.morrowindRules(checker) then
     state.shadowNamed = state.shadowNamed
       or startsWithIgnoreCase(name, 'shadow')
       or startsWithIgnoreCase(name, 'tri shadow')
@@ -97,7 +97,7 @@ local function visit(
   state.boundingBox = state.boundingBox
     or (seenCount[1] > 1 and string.lower(name) == 'bounding box')
 
-  local node = get(c, index, 'NiNode')
+  local node = get(checker, index, 'NiNode')
   if node then
     local switch = kind == 'NiSwitchNode' or kind == 'NiFltAnimationNode'
     local children = {}
@@ -108,47 +108,49 @@ local function visit(
     local count = if switch then math.min(#children, 1) else #children
     if switch and #children > 1 and not inCollisionNode then
       push(
-        c,
+        checker,
         'info',
         'switch_collision_first_child',
         index,
-        `only the first child of this {typeName(c, index)} collides`
+        `only the first child of this {typeName(checker, index)} collides`
       )
     end
 
-    for i = count, 1, -1 do
-      table.insert(stack, { index = children[i], state = state })
+    for position = count, 1, -1 do
+      table.insert(stack, { index = children[position], state = state })
     end
 
     return
   end
 
   if Constants.BsGeometryTypes[kind] then
-    if not inCollisionNode and not state.hidden then table.insert(c.uncollidableShapes, index) end
+    if not inCollisionNode and not state.hidden then
+      table.insert(checker.uncollidableShapes, index)
+    end
 
     return
   end
 
   if not Constants.CollidingTypes[kind] then return end
 
-  local gamebryo = Base.gamebryoCollision(c)
-  if c.collisionMarkers then
+  local gamebryo = Base.gamebryoCollision(checker)
+  if checker.collisionMarkers then
     local marker = if gamebryo then 'EditorMarker' else 'Tri EditorMarker'
     if startsWithIgnoreCase(name, marker) then return end
   end
 
-  local geometry = get(c, index, 'NiGeometry')
+  local geometry = get(checker, index, 'NiGeometry')
   if not geometry then return end
 
-  local data = get(c, geometry.data, 'NiGeometryData')
+  local data = get(checker, geometry.data, 'NiGeometryData')
   if not data or #data.vertices == 0 then return end
 
   local triangles = 0
-  Scene.shapeTriangles(c, geometry, function()
+  Scene.shapeTriangles(checker, geometry, function()
     triangles += 1
   end)
 
-  c.stats.collisionTriangles += triangles
+  checker.stats.collisionTriangles += triangles
   if triangles == 0 or inCollisionNode then return end
 
   local reason: string? = nil
@@ -158,46 +160,50 @@ local function visit(
     reason = 'is a shadow mesh'
   elseif state.boundingBox then
     reason = 'is under a "Bounding Box" node'
-  elseif gamebryo and c.hasMarkers and startsWithIgnoreCase(name, 'VisibilityEditorMarker') then
+  elseif gamebryo
+    and checker.hasMarkers
+    and startsWithIgnoreCase(name, 'VisibilityEditorMarker') then
     reason = 'is an editor marker'
   end
 
   -- Actors collide by their bounding box, not their shapes.
-  if reason and not c.stats.skinned then table.insert(c.invisibleColliders, { index, reason }) end
+  if reason and not checker.stats.skinned then
+    table.insert(checker.invisibleColliders, { index, reason })
+  end
 end
 
 --- bulletnifloader.cpp `handleNode`, `handleGeometry`: depth first, children in order, without
 --- recursion.
-local function walk(c: Checker, root: number, inCollisionNode: boolean)
+local function walk(checker: Checker, root: number, inCollisionNode: boolean)
   local seen, seenCount = {}, { 0 }
   local stack: { Pending } =
     { { index = root, state = { hidden = false, shadowNamed = false, boundingBox = false } } }
   while #stack > 0 do
     local pending = table.remove(stack) :: Pending
-    visit(c, pending.index, pending.state, inCollisionNode, seen, seenCount, stack)
+    visit(checker, pending.index, pending.state, inCollisionNode, seen, seenCount, stack)
   end
 end
 
-local function reportInvisibleColliders(c: Checker, why: string)
-  local invisible = c.invisibleColliders
-  c.invisibleColliders = {}
+local function reportInvisibleColliders(checker: Checker, why: string)
+  local invisible = checker.invisibleColliders
+  checker.invisibleColliders = {}
   local first = invisible[1]
   if not first then return end
 
   push(
-    c,
+    checker,
     'collision',
     'invisible_shape_collides',
     first[1],
-    `"{nameOf(c, first[1])}"{andMore(#invisible - 1)} {first[2]} and doesn't draw, but still collides {why}`
+    `"{nameOf(checker, first[1])}"{andMore(#invisible - 1)} {first[2]} and doesn't draw, but still collides {why}`
   )
 end
 
 --- bulletnifloader.cpp `handleRoot` for files before 10.0.1.0: `NC`/`NCC` string data, then the
 --- `RootCollisionNode`, then the render geometry.
-local function check(c: Checker, root: number)
-  local strings = Base.rootStrings(c, root)
-  c.collisionMarkers = table.find(strings, 'MRK') ~= nil
+local function check(checker: Checker, root: number)
+  local strings = Base.rootStrings(checker, root)
+  checker.collisionMarkers = table.find(strings, 'MRK') ~= nil
   local noCollision: string? = nil
   for _, value in strings do
     if startsWithIgnoreCase(value, 'NC') then
@@ -206,11 +212,11 @@ local function check(c: Checker, root: number)
     end
   end
 
-  local nodeIndex = c.collisionNode
-  local node = if nodeIndex then get(c, nodeIndex, 'NiNode') else nil
+  local nodeIndex = checker.collisionNode
+  local node = if nodeIndex then get(checker, nodeIndex, 'NiNode') else nil
   if not node then nodeIndex = nil end
 
-  if not c.collision then
+  if not checker.collision then
     local source: Base.CollisionSource
     if noCollision then
       source = if string.sub(noCollision, 3, 3) == 'C' then 'camera_only' else 'none'
@@ -220,7 +226,12 @@ local function check(c: Checker, root: number)
       source = 'render_geometry'
     end
 
-    c.collision = { source = source, node = nodeIndex, hidesMarkers = c.hasMarkers, bsxFlags = nil }
+    checker.collision = {
+      source = source,
+      node = nodeIndex,
+      hidesMarkers = checker.hasMarkers,
+      bsxFlags = nil,
+    }
   end
 
   if noCollision then return end
@@ -228,7 +239,7 @@ local function check(c: Checker, root: number)
   if node and nodeIndex then
     if #node.children == 0 then
       push(
-        c,
+        checker,
         'info',
         'camera_only_collision',
         nodeIndex,
@@ -236,40 +247,40 @@ local function check(c: Checker, root: number)
       )
     end
 
-    walk(c, nodeIndex, true)
+    walk(checker, nodeIndex, true)
   else
-    walk(c, root, false)
+    walk(checker, root, false)
   end
 
-  reportInvisibleColliders(c, 'because there\'s no RootCollisionNode')
-  if not node and c.stats.collisionTriangles > Constants.ManyCollisionTriangles then
+  reportInvisibleColliders(checker, 'because there\'s no RootCollisionNode')
+  if not node and checker.stats.collisionTriangles > Constants.ManyCollisionTriangles then
     push(
-      c,
+      checker,
       'performance',
       'render_geometry_collision',
       nil,
-      `no RootCollisionNode, so collision is built from {c.stats.collisionTriangles} render triangles`
+      `no RootCollisionNode, so collision is built from {checker.stats.collisionTriangles} render triangles`
     )
   end
 end
 
 --- bulletnifloader.cpp `handleRoot` for 10.0.1.0 and later: collision only with root `BSXFlags`
 --- bit 2, built from the render geometry; Havok collision objects are ignored.
-local function checkBsx(c: Checker, root: number)
-  local bsx = Base.bsxFlags(c, root)
+local function checkBsx(checker: Checker, root: number)
+  local bsx = Base.bsxFlags(checker, root)
   local collides = bsx ~= nil and bit32.btest(bsx, Constants.BsxCollision)
-  if not c.collision then
-    c.collision = {
+  if not checker.collision then
+    checker.collision = {
       source = if collides then 'render_geometry' else 'none',
       node = nil,
-      hidesMarkers = c.hasMarkers,
+      hidesMarkers = checker.hasMarkers,
       bsxFlags = bsx,
     }
   end
 
   local havok = 0
-  for index in c.reachable do
-    local av = get(c, index, 'NiAVObject')
+  for index in checker.reachable do
+    local av = get(checker, index, 'NiAVObject')
     if av and av.collision >= 0 then
       havok += 1
     end
@@ -281,7 +292,7 @@ local function checkBsx(c: Checker, root: number)
         then `the root's BSXFlags ({bsx}) don't set the collision bit (2)`
         else 'the root has no BSXFlags'
       push(
-        c,
+        checker,
         'collision',
         'no_collision',
         root,
@@ -294,7 +305,7 @@ local function checkBsx(c: Checker, root: number)
 
   if havok > 0 then
     push(
-      c,
+      checker,
       'info',
       'havok_ignored',
       nil,
@@ -302,39 +313,39 @@ local function checkBsx(c: Checker, root: number)
     )
   end
 
-  c.collisionMarkers = bsx ~= nil and bit32.btest(bsx, 32)
-  walk(c, root, false)
-  reportInvisibleColliders(c, 'since OpenMW builds collision from the render geometry')
-  local uncollidable = c.uncollidableShapes
-  c.uncollidableShapes = {}
+  checker.collisionMarkers = bsx ~= nil and bit32.btest(bsx, 32)
+  walk(checker, root, false)
+  reportInvisibleColliders(checker, 'since OpenMW builds collision from the render geometry')
+  local uncollidable = checker.uncollidableShapes
+  checker.uncollidableShapes = {}
   local first = uncollidable[1]
   if first then
     push(
-      c,
+      checker,
       'collision',
       'shape_without_collision',
       first,
-      `"{nameOf(c, first)}"{andMore(#uncollidable - 1)} is a {typeName(c, first)}, which OpenMW doesn't build collision from, so it doesn't collide`
+      `"{nameOf(checker, first)}"{andMore(#uncollidable - 1)} is a {typeName(checker, first)}, which OpenMW doesn't build collision from, so it doesn't collide`
     )
   end
 
-  if c.stats.collisionTriangles > Constants.ManyCollisionTriangles then
+  if checker.stats.collisionTriangles > Constants.ManyCollisionTriangles then
     push(
-      c,
+      checker,
       'performance',
       'render_geometry_collision',
       nil,
-      `collision is built from {c.stats.collisionTriangles} render triangles, since OpenMW ignores Havok collision`
+      `collision is built from {checker.stats.collisionTriangles} render triangles, since OpenMW ignores Havok collision`
     )
   end
 end
 
 --- bulletnifloader.cpp `findBoundingBox`: the first "Bounding Box" object sets the actor's
 --- collision box, and must be a box with positive extents.
-local function checkBoundingBox(c: Checker, roots: { number })
+local function checkBoundingBox(checker: Checker, roots: { number })
   local stack = {}
-  for i = #roots, 1, -1 do
-    table.insert(stack, roots[i])
+  for position = #roots, 1, -1 do
+    table.insert(stack, roots[position])
   end
 
   local seen = {}
@@ -343,7 +354,7 @@ local function checkBoundingBox(c: Checker, roots: { number })
     if seen[index] then continue end
 
     seen[index] = true
-    local av = get(c, index, 'NiAVObject')
+    local av = get(checker, index, 'NiAVObject')
     if not av then continue end
 
     if string.lower(av.name) == 'bounding box' then
@@ -352,7 +363,7 @@ local function checkBoundingBox(c: Checker, roots: { number })
       local valid = extents ~= nil and extents.x > 0 and extents.y > 0 and extents.z > 0
       if not valid then
         push(
-          c,
+          checker,
           'collision',
           'invalid_bounding_box',
           index,
@@ -363,11 +374,11 @@ local function checkBoundingBox(c: Checker, roots: { number })
       return
     end
 
-    local node = get(c, index, 'NiNode')
+    local node = get(checker, index, 'NiNode')
     if node then
       local children = node.children
-      for i = #children, 1, -1 do
-        if children[i] >= 0 then table.insert(stack, children[i]) end
+      for position = #children, 1, -1 do
+        if children[position] >= 0 then table.insert(stack, children[position]) end
       end
     end
   end

@@ -12,7 +12,7 @@ type: `BSXFlags` collision and editor markers, render geometry collision with Ha
 and animations OpenMW doesn't handle. Records are 0-based by index, as in the file.
 ]]
 
-local L = require '../gamebryo/links'
+local Links = require '../gamebryo/links'
 local Load = require '../gamebryo/load'
 local Reader = require '../gamebryo/reader'
 local Types = require './types'
@@ -25,7 +25,7 @@ type Finding = Types.Finding
 type Stats = Types.Stats
 type Collision = Types.Collision
 
-local Is = L.is
+local Is = Links.is
 
 --- Past this many controllers or modifiers a chain is treated as a loop.
 local MaxChain = 4096
@@ -142,48 +142,55 @@ export type Checker = {
 }
 
 --- Record `index` when it is or derives from `class`.
-local function get(c: Checker, index: number?, class: string): any
+local function get(checker: Checker, index: number?, class: string): any
   if not index or index < 0 then return nil end
 
-  local record = c.records[index + 1]
-  if not record or not Is[c.file.classes[index + 1]][class] then return nil end
+  local record = checker.records[index + 1]
+  if not record or not Is[checker.file.classes[index + 1]][class] then return nil end
 
   return record
 end
 
-local function recordType(c: Checker, index: number): string? return c.file.recordTypes[index + 1] end
-
-local function is(c: Checker, index: number, kind: string): boolean
-  return c.file.recordTypes[index + 1] == kind
+local function recordType(checker: Checker, index: number): string?
+  return checker.file.recordTypes[index + 1]
 end
 
-local function typeName(c: Checker, index: number): string return c.file.names[index + 1] or '' end
+local function is(checker: Checker, index: number, kind: string): boolean
+  return checker.file.recordTypes[index + 1] == kind
+end
 
-local function nameOf(c: Checker, index: number): string
-  local net = get(c, index, 'NiObjectNET')
+local function typeName(checker: Checker, index: number): string
+  return checker.file.names[index + 1] or ''
+end
+
+local function nameOf(checker: Checker, index: number): string
+  local net = get(checker, index, 'NiObjectNET')
   return if net then net.name else ''
 end
 
 local function push(
-  c: Checker,
+  checker: Checker,
   severity: Severity,
   code: string,
   record: number?,
   message: string
 )
-  table.insert(c.findings, { severity = severity, code = code, message = message, record = record })
+  table.insert(
+    checker.findings,
+    { severity = severity, code = code, message = message, record = record }
+  )
 end
 
 --- The controllers chained from `first`, stopping at a missing link or a loop, as
 --- `{ index, controller }` pairs.
-local function controllers(c: Checker, first: number): { { any } }
+local function controllers(checker: Checker, first: number): { { any } }
   local chain, seen = {}, {}
   local link = first
   while #chain < MaxChain do
     if link < 0 or seen[link] then break end
 
     seen[link] = true
-    local controller = get(c, link, 'NiTimeController')
+    local controller = get(checker, link, 'NiTimeController')
     if not controller then break end
 
     table.insert(chain, { link, controller })
@@ -194,7 +201,7 @@ local function controllers(c: Checker, first: number): { { any } }
 end
 
 --- `NiObjectNET::getExtraList`: the extra data list, then the chain older files use.
-local function extraList(c: Checker, net: any): { number }
+local function extraList(checker: Checker, net: any): { number }
   local list = {}
   for _, index in net.extraList do
     if index >= 0 then table.insert(list, index) end
@@ -206,7 +213,7 @@ local function extraList(c: Checker, net: any): { number }
     if link < 0 or seen[link] then break end
 
     seen[link] = true
-    local extra = get(c, link, 'Extra')
+    local extra = get(checker, link, 'Extra')
     if not extra then break end
 
     table.insert(list, link)
@@ -216,17 +223,17 @@ local function extraList(c: Checker, net: any): { number }
   return list
 end
 
-local function rootExtra(c: Checker, root: number): { number }
-  local net = get(c, root, 'NiObjectNET')
-  return if net then extraList(c, net) else {}
+local function rootExtra(checker: Checker, root: number): { number }
+  local net = get(checker, root, 'NiObjectNET')
+  return if net then extraList(checker, net) else {}
 end
 
-local function rootStrings(c: Checker, root: number): { string }
+local function rootStrings(checker: Checker, root: number): { string }
   local strings = {}
-  for _, index in rootExtra(c, root) do
-    if not is(c, index, 'NiStringExtraData') then continue end
+  for _, index in rootExtra(checker, root) do
+    if not is(checker, index, 'NiStringExtraData') then continue end
 
-    local extra = get(c, index, 'NiStringExtraData')
+    local extra = get(checker, index, 'NiStringExtraData')
     if extra then table.insert(strings, extra.data) end
   end
 
@@ -234,11 +241,11 @@ local function rootStrings(c: Checker, root: number): { string }
 end
 
 --- The root's first `BSXFlags` (bulletnifloader.cpp `handleRoot`).
-local function bsxFlags(c: Checker, root: number): number?
-  for _, index in rootExtra(c, root) do
-    if not is(c, index, 'BSXFlags') then continue end
+local function bsxFlags(checker: Checker, root: number): number?
+  for _, index in rootExtra(checker, root) do
+    if not is(checker, index, 'BSXFlags') then continue end
 
-    local flags = get(c, index, 'NiIntegerExtraData')
+    local flags = get(checker, index, 'NiIntegerExtraData')
     return if flags then flags.data else nil
   end
 
@@ -250,40 +257,40 @@ local function contains(list: { string }, value: string): boolean
 end
 
 --- Morrowind-era files (up to 4.0.0.2), which get Morrowind's shadow, marker, and specular rules.
-local function morrowindRules(c: Checker): boolean return c.version <= VerMw end
+local function morrowindRules(checker: Checker): boolean return checker.version <= VerMw end
 
 --- Files before 10.0.1.0 collide by `RootCollisionNode` and string data; later ones by `BSXFlags`.
-local function gamebryoCollision(c: Checker): boolean return c.version >= 0x0A000100 end
+local function gamebryoCollision(checker: Checker): boolean return checker.version >= 0x0A000100 end
 
-local function findReachable(c: Checker, rootsChecked: boolean)
-  local file = c.file
+local function findReachable(checker: Checker, rootsChecked: boolean)
+  local file = checker.file
   local stack = {}
   for _, root in file.roots do
-    if root >= 0 and root < #c.records then table.insert(stack, root) end
+    if root >= 0 and root < #checker.records then table.insert(stack, root) end
   end
 
   local count = 0
   while #stack > 0 do
     local index = table.remove(stack) :: number
-    local record = c.records[index + 1]
-    if not record or c.reachable[index] then continue end
+    local record = checker.records[index + 1]
+    if not record or checker.reachable[index] then continue end
 
-    c.reachable[index] = true
+    checker.reachable[index] = true
     count += 1
     local codec: any = (Load :: any)[file.classes[index + 1]]
-    for _, link in L.of(record, codec.check, c.records, file.classes, index) do
+    for _, link in Links.of(record, codec.check, checker.records, file.classes, index) do
       if link >= 0 then table.insert(stack, link) end
     end
   end
 
-  c.stats.records = #c.records
-  c.stats.reachableRecords = count
+  checker.stats.records = #checker.records
+  checker.stats.reachableRecords = count
   if rootsChecked then return end
 
   for position, root in file.roots do
-    if root < -1 or root >= #c.records then
+    if root < -1 or root >= #checker.records then
       push(
-        c,
+        checker,
         'broken',
         'root_out_of_range',
         nil,
@@ -295,10 +302,10 @@ end
 
 --- node.cpp `NiNode::read`: record 0's transform is discarded when it's a node other than
 --- `Bip01`, in Morrowind-era and Fallout 3 and later files (not Oblivion's).
-local function checkRootTransform(c: Checker)
-  if c.version > VerMw and c.version < VerBgs then return end
+local function checkRootTransform(checker: Checker)
+  if checker.version > VerMw and checker.version < VerBgs then return end
 
-  local node = get(c, 0, 'NiNode')
+  local node = get(checker, 0, 'NiNode')
   if not node then return end
 
   local transform = node.transform
@@ -306,7 +313,7 @@ local function checkRootTransform(c: Checker)
   if identity or string.lower(node.name) == 'bip01' then return end
 
   push(
-    c,
+    checker,
     'info',
     'root_transform_ignored',
     0,
@@ -316,8 +323,8 @@ end
 
 --- node.cpp `findRootCollisionNode`: children in reverse, searching each one's subtree before the
 --- next child only with `RCN`. Depth first without recursion.
-local function findCollisionNode(c: Checker, root: number, recursive: boolean): number?
-  local node = get(c, root, 'NiNode')
+local function findCollisionNode(checker: Checker, root: number, recursive: boolean): number?
+  local node = get(checker, root, 'NiNode')
   if not node then return nil end
 
   local seen = { [root] = true }
@@ -329,11 +336,11 @@ local function findCollisionNode(c: Checker, root: number, recursive: boolean): 
 
   while #stack > 0 do
     local child = table.remove(stack) :: number
-    if is(c, child, 'RootCollisionNode') then return child end
+    if is(checker, child, 'RootCollisionNode') then return child end
 
     if not recursive then continue end
 
-    local inner = get(c, child, 'NiNode')
+    local inner = get(checker, child, 'NiNode')
     if inner and not seen[child] then
       seen[child] = true
       for _, grandchild in inner.children do
@@ -347,20 +354,21 @@ end
 
 --- nifloader.cpp `handleNode` at the root: `MRK` string data or `BSXFlags` bit 32 hides editor
 --- markers, and `RCN` searches for the collision node recursively.
-local function checkRootStrings(c: Checker, root: number)
-  local strings = rootStrings(c, root)
+local function checkRootStrings(checker: Checker, root: number)
+  local strings = rootStrings(checker, root)
   local stringRecords = {}
-  for _, index in rootExtra(c, root) do
-    if not is(c, index, 'NiStringExtraData') then continue end
+  for _, index in rootExtra(checker, root) do
+    if not is(checker, index, 'NiStringExtraData') then continue end
 
-    local extra = get(c, index, 'NiStringExtraData')
+    local extra = get(checker, index, 'NiStringExtraData')
     if extra then table.insert(stringRecords, { index, extra.data }) end
   end
 
-  local bsx = bsxFlags(c, root)
-  c.hasMarkers = contains(strings, 'MRK') or (bsx ~= nil and bit32.btest(bsx, BsxEditorMarkers))
-  c.collisionNode = findCollisionNode(c, root, contains(strings, 'RCN'))
-  if gamebryoCollision(c) then return end
+  local bsx = bsxFlags(checker, root)
+  checker.hasMarkers =
+    contains(strings, 'MRK') or (bsx ~= nil and bit32.btest(bsx, BsxEditorMarkers))
+  checker.collisionNode = findCollisionNode(checker, root, contains(strings, 'RCN'))
+  if gamebryoCollision(checker) then return end
 
   for _, entry in stringRecords do
     local index, value = entry[1], entry[2]
@@ -368,7 +376,7 @@ local function checkRootStrings(c: Checker, root: number)
     if startsWithIgnoreCase(value, 'NC') and string.sub(value, 3, 3) == 'c' then
       -- The string data record, which `nif fix` changes, not the root.
       push(
-        c,
+        checker,
         'collision',
         'lowercase_ncc',
         index,
@@ -381,37 +389,37 @@ end
 local function isActive(controller: any): boolean return bit32.btest(controller.flags, 0x8) end
 
 --- An interpolator of a type the controller can't use makes OpenMW skip the controller.
-local function checkInterpolator(c: Checker, controller: number, expected: string): boolean
-  local single = get(c, controller, 'NiSingleInterpController')
+local function checkInterpolator(checker: Checker, controller: number, expected: string): boolean
+  local single = get(checker, controller, 'NiSingleInterpController')
   if not single or single.interpolator < 0 then return true end
 
   local interpolator = single.interpolator
-  if is(c, interpolator, expected) then return true end
+  if is(checker, interpolator, expected) then return true end
 
   push(
-    c,
+    checker,
     'broken',
     'unsupported_interpolator',
     controller,
-    `Unsupported interpolator type for {typeName(c, controller)}: {typeName(c, interpolator)}, so the controller is skipped`
+    `Unsupported interpolator type for {typeName(checker, controller)}: {typeName(checker, interpolator)}, so the controller is skipped`
   )
   return false
 end
 
-local function hasInterpolator(c: Checker, controller: number): boolean
-  local single = get(c, controller, 'NiSingleInterpController')
+local function hasInterpolator(checker: Checker, controller: number): boolean
+  local single = get(checker, controller, 'NiSingleInterpController')
   return single ~= nil and single.interpolator >= 0
 end
 
-local function checkNodeController(c: Checker, index: number)
-  local kind = recordType(c, index)
+local function checkNodeController(checker: Checker, index: number)
+  local kind = recordType(checker, index)
   if kind == 'NiPathController' then
-    local path = get(c, index, 'NiPathController')
+    local path = get(checker, index, 'NiPathController')
     if not path then return end
 
     if path.pathData < 0 or path.percentData < 0 then
       push(
-        c,
+        checker,
         'broken',
         'controller_without_data',
         index,
@@ -420,7 +428,7 @@ local function checkNodeController(c: Checker, index: number)
     elseif path.pathFlags ~= 0 then
       -- controller.cpp `PathController`: only the position along the path is applied.
       push(
-        c,
+        checker,
         'broken',
         'path_flags_ignored',
         index,
@@ -428,10 +436,10 @@ local function checkNodeController(c: Checker, index: number)
       )
     end
   elseif kind == 'NiLookAtController' then
-    local lookAt = get(c, index, 'NiLookAtController')
+    local lookAt = get(checker, index, 'NiLookAtController')
     if lookAt and lookAt.lookAt < 0 then
       push(
-        c,
+        checker,
         'broken',
         'controller_without_data',
         index,
@@ -439,35 +447,35 @@ local function checkNodeController(c: Checker, index: number)
       )
     end
   elseif kind == 'NiKeyframeController' then
-    local keyframe = get(c, index, 'NiKeyframeController')
+    local keyframe = get(checker, index, 'NiKeyframeController')
     local data = keyframe ~= nil and keyframe.data >= 0
-    if not data and not hasInterpolator(c, index) then
+    if not data and not hasInterpolator(checker, index) then
       push(
-        c,
+        checker,
         'info',
         'controller_without_data',
         index,
-        `{typeName(c, index)} without data is skipped`
+        `{typeName(checker, index)} without data is skipped`
       )
     else
-      checkInterpolator(c, index, 'NiTransformInterpolator')
+      checkInterpolator(checker, index, 'NiTransformInterpolator')
     end
   elseif kind == 'NiVisController' then
-    checkInterpolator(c, index, 'NiBoolInterpolator')
+    checkInterpolator(checker, index, 'NiBoolInterpolator')
   elseif kind == 'NiRollController' then
-    checkInterpolator(c, index, 'NiFloatInterpolator')
+    checkInterpolator(checker, index, 'NiFloatInterpolator')
   end
 end
 
-local function shapeData(c: Checker, index: number): any
-  local geometry = get(c, index, 'NiGeometry')
-  return if geometry then get(c, geometry.data, 'NiGeometryData') else nil
+local function shapeData(checker: Checker, index: number): any
+  local geometry = get(checker, index, 'NiGeometry')
+  return if geometry then get(checker, geometry.data, 'NiGeometryData') else nil
 end
 
-local function checkMorpher(c: Checker, owner: number, index: number, skinned: boolean)
+local function checkMorpher(checker: Checker, owner: number, index: number, skinned: boolean)
   if skinned then
     push(
-      c,
+      checker,
       'broken',
       'morpher_on_skinned_shape',
       index,
@@ -476,14 +484,14 @@ local function checkMorpher(c: Checker, owner: number, index: number, skinned: b
     return
   end
 
-  local data = shapeData(c, owner)
+  local data = shapeData(checker, owner)
   local vertices = if data then #data.vertices else 0
-  local controller = get(c, index, 'NiGeomMorpherController')
-  local morphData = if controller then get(c, controller.data, 'NiMorphData') else nil
+  local controller = get(checker, index, 'NiGeomMorpherController')
+  local morphData = if controller then get(checker, controller.data, 'NiMorphData') else nil
   local base = if morphData then morphData.morphs[1] else nil
   if not base then
     push(
-      c,
+      checker,
       'broken',
       'controller_without_data',
       index,
@@ -495,7 +503,7 @@ local function checkMorpher(c: Checker, owner: number, index: number, skinned: b
   if #base.vertices == vertices then return end
 
   push(
-    c,
+    checker,
     'broken',
     'morph_vertex_mismatch',
     index,
@@ -505,13 +513,13 @@ end
 
 --- nifloader.cpp `handleNodeControllers`, `handleMeshControllers`, and the morpher in
 --- `handleNiGeometry`.
-local function checkNodeControllers(c: Checker, owner: number, chain: { { any } })
-  local ownerType = typeName(c, owner)
-  local ownerKind = recordType(c, owner)
+local function checkNodeControllers(checker: Checker, owner: number, chain: { { any } })
+  local ownerType = typeName(checker, owner)
+  local ownerKind = recordType(checker, owner)
   local isNiGeometry = ownerKind ~= nil and NiGeometryTypes[ownerKind] == true
   local isMesh = isNiGeometry or (ownerKind ~= nil and BsGeometryTypes[ownerKind] == true)
   local isParticles = ownerKind == 'NiParticles'
-  local geometry = get(c, owner, 'NiGeometry')
+  local geometry = get(checker, owner, 'NiGeometry')
   local skinned = geometry ~= nil and geometry.skin >= 0
   -- Particle systems OpenMW doesn't draw are reported once, as unsupported_particles.
   local unsupportedParticles = ownerKind == 'NiParticleSystem'
@@ -521,11 +529,11 @@ local function checkNodeControllers(c: Checker, owner: number, chain: { { any } 
     -- Inactive controllers are skipped everywhere except in KF files.
     if not isActive(controller) then continue end
 
-    c.stats.controllers += 1
+    checker.stats.controllers += 1
     if unsupportedParticles then continue end
 
-    local name = typeName(c, index)
-    local kind = recordType(c, index)
+    local name = typeName(checker, index)
+    local kind = recordType(checker, index)
     if
       kind == 'NiKeyframeController'
       or kind == 'NiPathController'
@@ -533,11 +541,11 @@ local function checkNodeControllers(c: Checker, owner: number, chain: { { any } 
       or kind == 'NiRollController'
       or kind == 'NiLookAtController'
     then
-      checkNodeController(c, index)
+      checkNodeController(checker, index)
     elseif kind == 'NiUVController' and isMesh then
       continue
     elseif kind == 'NiGeomMorpherController' and isNiGeometry then
-      checkMorpher(c, owner, index, skinned)
+      checkMorpher(checker, owner, index, skinned)
     elseif
       (kind == 'NiParticleSystemController' or kind == 'NiBSPArrayController') and isParticles
     then
@@ -549,14 +557,20 @@ local function checkNodeControllers(c: Checker, owner: number, chain: { { any } 
       or kind == 'NiBSPArrayController'
     then
       push(
-        c,
+        checker,
         'broken',
         'controller_does_nothing',
         index,
         `{name} on {ownerType} does nothing; it only works on geometry`
       )
     else
-      push(c, 'broken', 'unhandled_controller', index, `Unhandled controller {name} on {ownerType}`)
+      push(
+        checker,
+        'broken',
+        'unhandled_controller',
+        index,
+        `Unhandled controller {name} on {ownerType}`
+      )
     end
   end
 end

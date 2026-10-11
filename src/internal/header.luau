@@ -72,22 +72,22 @@ end
 local function lossy(text: string): string
   if utf8.len(text) then return text end
 
-  local out: { string }, i, n = {}, 1, #text
-  while i <= n do
-    local valid, bad = utf8.len(text, i)
+  local out: { string }, from, size = {}, 1, #text
+  while from <= size do
+    local valid, bad = utf8.len(text, from)
     if valid then
-      table.insert(out, string.sub(text, i))
+      table.insert(out, string.sub(text, from))
       break
     end
 
     local at = bad :: number
-    table.insert(out, string.sub(text, i, at - 1))
+    table.insert(out, string.sub(text, from, at - 1))
     -- A lead byte and the continuation bytes after it that fit count as one bad sequence.
     local first = string.byte(text, at)
     local width = if first >= 0xF0 then 4 elseif first >= 0xE0 then 3 else 2
     local stop = at + 1
     if first >= 0xC2 and first <= 0xF4 then
-      while stop < at + width and stop <= n do
+      while stop < at + width and stop <= size do
         local byte = string.byte(text, stop)
         if byte < 0x80 or byte > 0xBF then break end
 
@@ -96,40 +96,40 @@ local function lossy(text: string): string
     end
 
     table.insert(out, '\u{FFFD}')
-    i = stop
+    from = stop
   end
 
   return table.concat(out)
 end
 
---- Parses the header at the start of `b`. Errors name what OpenMW rejects (a bad signature,
+--- Parses the header at the start of `bytes`. Errors name what OpenMW rejects (a bad signature,
 --- big-endian data, hashed record types) and where the header is truncated.
-local function parse(b: buffer): Header
-  local n = buffer.len(b)
-  local p = 0
+local function parse(bytes: buffer): Header
+  local fileSize = buffer.len(bytes)
+  local cursor = 0
 
   local function take(length: number, what: string): number
-    if p + length > n then truncated(p, what) end
+    if cursor + length > fileSize then truncated(cursor, what) end
 
-    local at = p
-    p += length
+    local at = cursor
+    cursor += length
     return at
   end
 
-  local function u8(what: string): number return buffer.readu8(b, take(1, what)) end
+  local function u8(what: string): number return buffer.readu8(bytes, take(1, what)) end
 
-  local function u16(what: string): number return buffer.readu16(b, take(2, what)) end
+  local function u16(what: string): number return buffer.readu16(bytes, take(2, what)) end
 
-  local function u32(what: string): number return buffer.readu32(b, take(4, what)) end
+  local function u32(what: string): number return buffer.readu32(bytes, take(4, what)) end
 
   -- The whole field is interned (in native code), and cut and made valid once per spelling.
   local function sized(length: number, what: string): string
     local at = take(length, what)
-    local token = Spellings:intern(b, at, length)
+    local token = Spellings:intern(bytes, at, length)
     local text = Texts[token]
     if text then return text end
 
-    text = buffer.readstring(b, at, length)
+    text = buffer.readstring(bytes, at, length)
     local nul = string.find(text, '\0', 1, true)
     if nul then text = string.sub(text, 1, nul - 1) end
 
@@ -139,17 +139,17 @@ local function parse(b: buffer): Header
   end
 
   local lineEnd = -1
-  for i = 0, n - 1 do
-    if buffer.readu8(b, i) == 10 then
-      lineEnd = i
+  for offset = 0, fileSize - 1 do
+    if buffer.readu8(bytes, offset) == 10 then
+      lineEnd = offset
       break
     end
   end
 
   if lineEnd < 0 then truncated(0, 'version line') end
 
-  local versionLine = lossy(buffer.readstring(b, 0, lineEnd))
-  p = lineEnd + 1
+  local versionLine = lossy(buffer.readstring(bytes, 0, lineEnd))
+  cursor = lineEnd + 1
   local signed = string.find(versionLine, 'NetImmerse File Format', 1, true) == 1
     or string.find(versionLine, 'Gamebryo File Format', 1, true) == 1
   if not signed then error(`Invalid NIF header: {versionLine}`, 0) end
@@ -188,32 +188,32 @@ local function parse(b: buffer): Header
   if fileVersion >= version(5, 0, 0, 1) then
     if fileVersion == version(20, 3, 1, 2) then error('Hashed record types are unsupported', 0) end
 
-    for i = 1, u16 'record type count' do
-      recordTypes[i] = sized(u32 'record type', 'record type')
+    for index = 1, u16 'record type count' do
+      recordTypes[index] = sized(u32 'record type', 'record type')
     end
 
     -- All at once when they fit; one at a time otherwise, so a short file names where it ends.
-    if p + count * 2 <= n then
+    if cursor + count * 2 <= fileSize then
       local at = take(count * 2, 'record type index')
-      for i = 1, count do
-        recordTypeIndices[i] = buffer.readu16(b, at + (i - 1) * 2)
+      for index = 1, count do
+        recordTypeIndices[index] = buffer.readu16(bytes, at + (index - 1) * 2)
       end
     else
-      for i = 1, count do
-        recordTypeIndices[i] = u16 'record type index'
+      for index = 1, count do
+        recordTypeIndices[index] = u16 'record type index'
       end
     end
   end
 
   if fileVersion >= version(20, 2, 0, 5) then
-    if p + count * 4 <= n then
+    if cursor + count * 4 <= fileSize then
       local at = take(count * 4, 'record size')
-      for i = 1, count do
-        recordSizes[i] = buffer.readu32(b, at + (i - 1) * 4)
+      for index = 1, count do
+        recordSizes[index] = buffer.readu32(bytes, at + (index - 1) * 4)
       end
     else
-      for i = 1, count do
-        recordSizes[i] = u32 'record size'
+      for index = 1, count do
+        recordSizes[index] = u32 'record size'
       end
     end
   end
@@ -221,8 +221,8 @@ local function parse(b: buffer): Header
   if fileVersion >= version(20, 1, 0, 1) then
     local total = u32 'string count'
     u32 'longest string'
-    for i = 1, total do
-      strings[i] = sized(u32 'string', 'string')
+    for index = 1, total do
+      strings[index] = sized(u32 'string', 'string')
     end
   end
 
@@ -232,9 +232,9 @@ local function parse(b: buffer): Header
     end
   end
 
-  for i, typeIndex in recordTypeIndices do
+  for index, typeIndex in recordTypeIndices do
     local name = recordTypes[typeIndex + 1]
-    if not name or name == '' then error(`Record type is blank (index {i - 1})`, 0) end
+    if not name or name == '' then error(`Record type is blank (index {index - 1})`, 0) end
   end
 
   return {
@@ -248,7 +248,7 @@ local function parse(b: buffer): Header
     recordTypeIndices = recordTypeIndices,
     recordSizes = recordSizes,
     strings = strings,
-    size = p,
+    size = cursor,
   }
 end
 
@@ -291,23 +291,23 @@ end
 
 --- The root record indices, read after the records when the header gives record sizes; nil when
 --- the sizes aren't known or the roots are truncated.
-local function roots(header: Header, b: buffer): { number }?
+local function roots(header: Header, bytes: buffer): { number }?
   if #header.recordSizes == 0 and header.recordCount > 0 then return nil end
 
-  local p = header.size
+  local cursor = header.size
   for _, size in header.recordSizes do
-    p += size
+    cursor += size
   end
 
-  local n = buffer.len(b)
-  if p + 4 > n then return nil end
+  local fileSize = buffer.len(bytes)
+  if cursor + 4 > fileSize then return nil end
 
-  local count = buffer.readu32(b, p)
-  if p + 4 + count * 4 > n then return nil end
+  local count = buffer.readu32(bytes, cursor)
+  if cursor + 4 + count * 4 > fileSize then return nil end
 
   local list = table.create(count) :: { number }
-  for i = 1, count do
-    list[i] = buffer.readi32(b, p + i * 4)
+  for index = 1, count do
+    list[index] = buffer.readi32(bytes, cursor + index * 4)
   end
 
   return list

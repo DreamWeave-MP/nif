@@ -8,7 +8,7 @@ for the Morrowind model (`open`) and the multi-version reader's records alike.
 ]]
 
 local Classes = require './classes'
-local L = require './gamebryo/links'
+local Links = require './gamebryo/links'
 local Reader = require './gamebryo/reader'
 
 --- A record by index and type.
@@ -51,8 +51,8 @@ local function nonEmpty<T>(list: { T }): { T }? return if #list > 0 then list el
 --- How many records of each type a Morrowind model holds.
 local function recordTypeCounts(nif: any): { [string]: number }
   local counts = {}
-  for i = 0, nif.count - 1 do
-    local name = nif:typeOf(i)
+  for index = 0, nif.count - 1 do
+    local name = nif:typeOf(index)
     counts[name] = (counts[name] or 0) + 1
   end
 
@@ -117,8 +117,8 @@ local function sceneTree(nif: any): { TreeNode }
 
   local function refs(list: any): { RecordRef }
     local found = {}
-    for i = 1, list.count do
-      local ref = recordRef(list:get(i))
+    for entry = 1, list.count do
+      local ref = recordRef(list:get(entry))
       if ref then table.insert(found, ref) end
     end
 
@@ -132,8 +132,8 @@ local function sceneTree(nif: any): { TreeNode }
 
     local total = 0
     local lengths = nif:record(data).stripLengths
-    for i = 1, lengths.count do
-      total += math.max(lengths:get(i) - 2, 0)
+    for strip = 1, lengths.count do
+      total += math.max(lengths:get(strip) - 2, 0)
     end
 
     return total
@@ -164,8 +164,8 @@ local function sceneTree(nif: any): { TreeNode }
     if is(index, 'NiNode') then
       tree.effects = nonEmpty(refs(record.effects))
       local children: { TreeNode } = {}
-      for i = 1, record.children.count do
-        local child = node(record.children:get(i), depth + 1)
+      for entry = 1, record.children.count do
+        local child = node(record.children:get(entry), depth + 1)
         if child then table.insert(children, child) end
       end
 
@@ -217,7 +217,7 @@ local function fileSceneTree(file: Reader.File): { TreeNode }
     if index < 0 then return nil end
 
     local record = records[index + 1]
-    if not record or not L.is[classes[index + 1]][class] then return nil end
+    if not record or not Links.is[classes[index + 1]][class] then return nil end
 
     return record
   end

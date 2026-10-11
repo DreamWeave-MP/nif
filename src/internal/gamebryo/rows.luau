@@ -4,12 +4,12 @@
 --[[
 Lists of fixed-size structs as views of the file's bytes: a list is where its first element
 starts, how many there are, how far apart, and the function that reads one. Reading the list
-reads none of them; element `i` becomes a table the first time it is asked for, and stays that
+reads none of them; element `index` becomes a table the first time it is asked for, and stays that
 table. A collision mesh's thousands of triangles cost one small table to read. `#rows`,
-`rows[i]`, and `for i, row in rows` work as on a plain list.
+`rows[index]`, and `for index, row in rows` work as on a plain list.
 ]]
 
-export type Read = (b: buffer, at: number) -> any
+export type Read = (bytes: buffer, at: number) -> any
 
 export type Rows = {
   buffer: buffer,
@@ -39,19 +39,19 @@ Meta.__index = function(rows: Rows, key: unknown): any
 end
 
 Meta.__iter = function(rows: Rows): () -> (number?, any)
-  local i, count = 0, rows.count
+  local index, count = 0, rows.count
   return function()
-    i += 1
-    if i > count then return nil, nil end
+    index += 1
+    if index > count then return nil, nil end
 
-    return i, Meta.__index(rows, i)
+    return index, Meta.__index(rows, index)
   end
 end
 
---- `count` elements `stride` bytes apart from `offset` in `b`, each read by `read`.
-local function new(b: buffer, offset: number, count: number, stride: number, read: Read): Rows
+--- `count` elements `stride` bytes apart from `offset` in `bytes`, each read by `read`.
+local function new(bytes: buffer, offset: number, count: number, stride: number, read: Read): Rows
   return setmetatable(
-    { buffer = b, offset = offset, count = count, stride = stride, read = read },
+    { buffer = bytes, offset = offset, count = count, stride = stride, read = read },
     Meta
   ) :: any
 end

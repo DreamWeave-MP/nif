@@ -82,8 +82,8 @@ end
 --- A link list's records, -1 and links to nothing left out.
 local function children(list: any): { number }
   local found = {}
-  for i = 1, list.count do
-    local index = list:get(i)
+  for entry = 1, list.count do
+    local index = list:get(entry)
     if index >= 0 then table.insert(found, index) end
   end
 
@@ -211,9 +211,9 @@ local function fixSkinWeights(nif: any, fixed: { Fixed })
     for _, bone in nif:record(data).boneData do
       local weights = bone.vertexWeights
       local kept = {}
-      for i = 0, weights.count - 1 do
-        if buffer.readu16(weights.buffer, weights.offset + i * 6) < vertices then
-          table.insert(kept, i)
+      for entry = 0, weights.count - 1 do
+        if buffer.readu16(weights.buffer, weights.offset + entry * 6) < vertices then
+          table.insert(kept, entry)
         end
       end
 
@@ -222,8 +222,14 @@ local function fixSkinWeights(nif: any, fixed: { Fixed })
       dropped += weights.count - #kept
       -- The kept weights' bytes as they were: every float keeps its bits.
       local filtered = Array.new('u16f32', #kept)
-      for position, i in kept do
-        buffer.copy(filtered.buffer, (position - 1) * 6, weights.buffer, weights.offset + i * 6, 6)
+      for position, entry in kept do
+        buffer.copy(
+          filtered.buffer,
+          (position - 1) * 6,
+          weights.buffer,
+          weights.offset + entry * 6,
+          6
+        )
       end
 
       bone.vertexWeights = filtered

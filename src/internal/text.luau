@@ -20,32 +20,32 @@ local strings: { string } = {}
 --- Each token's text as a record holds it: cut at the first NUL and decoded from Windows-1252.
 --- A spelling with a NUL in it has the text before the NUL, so a reader can intern a field's
 --- whole span and cut it once per spelling, or intern the cut span; both find the same text.
-local decoded: { string } = {}
+local Decoded: { string } = {}
 
---- The string `length` bytes from `offset` in `b` spell, made once per spelling.
-local function read(b: buffer, offset: number, length: number): string
-  local token = spellings:intern(b, offset, length)
+--- The string `length` bytes from `offset` in `source` spell, made once per spelling.
+local function read(source: buffer, offset: number, length: number): string
+  local token = spellings:intern(source, offset, length)
   local text = strings[token]
   if text then return text end
 
-  text = buffer.readstring(b, offset, length)
+  text = buffer.readstring(source, offset, length)
   strings[token] = text
   return text
 end
 
 --- Text in records is Windows-1252, as OpenMW and jess-nif read it: the `length` bytes from
---- `offset` in `b` as UTF-8. ASCII, nearly all of it, is as it is.
-local function decode(b: buffer, offset: number, length: number): string
-  local raw = buffer.readstring(b, offset, length)
+--- `offset` in `source` as UTF-8. ASCII, nearly all of it, is as it is.
+local function decode(source: buffer, offset: number, length: number): string
+  local raw = buffer.readstring(source, offset, length)
   if not string.find(raw, '[\128-\255]') then return raw end
 
   return bytes.decode(raw, 'windows-1252')
 end
 
---- The `length` bytes from `offset` in `b` cut at the first NUL, the way OpenMW reads names,
+--- The `length` bytes from `offset` in `source` cut at the first NUL, the way OpenMW reads names,
 --- and decoded.
-local function cut(b: buffer, offset: number, length: number): string
-  local raw = buffer.readstring(b, offset, length)
+local function cut(source: buffer, offset: number, length: number): string
+  local raw = buffer.readstring(source, offset, length)
   local nul = string.find(raw, '\0', 1, true)
   if nul then raw = string.sub(raw, 1, nul - 1) end
 
@@ -72,7 +72,7 @@ end
 return table.freeze {
   pool = spellings,
   strings = strings,
-  decoded = decoded,
+  decoded = Decoded,
   read = read,
   decode = decode,
   cut = cut,

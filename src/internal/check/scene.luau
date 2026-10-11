@@ -19,10 +19,10 @@ local NiGeometryTypes, BsGeometryTypes = Constants.NiGeometryTypes, Constants.Bs
 
 --- Calls `visit` with each triangle of a `u16` view of triples.
 local function triangleList(list: any, visit: (number, number, number) -> ())
-  local b, offset = list.buffer, list.offset
-  for i = 0, list.count // 3 - 1 do
-    local at = offset + i * 6
-    visit(buffer.readu16(b, at), buffer.readu16(b, at + 2), buffer.readu16(b, at + 4))
+  local bytes, offset = list.buffer, list.offset
+  for triangle = 0, list.count // 3 - 1 do
+    local at = offset + triangle * 6
+    visit(buffer.readu16(bytes, at), buffer.readu16(bytes, at + 2), buffer.readu16(bytes, at + 4))
   end
 end
 
@@ -30,12 +30,12 @@ end
 --- triangles are dropped.
 local function unrollStrips(strips: any, visit: (number, number, number) -> ())
   for _, strip in strips do
-    local b, offset = strip.buffer, strip.offset
-    for i = 0, strip.count - 3 do
-      local at = offset + i * 2
+    local bytes, offset = strip.buffer, strip.offset
+    for step = 0, strip.count - 3 do
+      local at = offset + step * 2
       local first, second, third =
-        buffer.readu16(b, at), buffer.readu16(b, at + 2), buffer.readu16(b, at + 4)
-      if i % 2 == 1 then
+        buffer.readu16(bytes, at), buffer.readu16(bytes, at + 2), buffer.readu16(bytes, at + 4)
+      if step % 2 == 1 then
         second, third = third, second
       end
 
@@ -45,19 +45,23 @@ local function unrollStrips(strips: any, visit: (number, number, number) -> ())
 end
 
 --- `getPartitions`: a skin instance's own partitions, or its skin data's.
-local function partitionsOf(c: Checker, skin: any): any
-  local partitions = get(c, skin.partitions, 'NiSkinPartition')
+local function partitionsOf(checker: Checker, skin: any): any
+  local partitions = get(checker, skin.partitions, 'NiSkinPartition')
   if partitions then return partitions end
 
-  local data = get(c, skin.data, 'NiSkinData')
-  return if data then get(c, data.partitions, 'NiSkinPartition') else nil
+  local data = get(checker, skin.data, 'NiSkinData')
+  return if data then get(checker, data.partitions, 'NiSkinPartition') else nil
 end
 
 --- Calls `visit` with each triangle OpenMW draws and collides with: the skin partitions' when
 --- there are any, otherwise the data's.
-local function shapeTriangles(c: Checker, geometry: any, visit: (number, number, number) -> ())
-  local skin = get(c, geometry.skin, 'NiSkinInstance')
-  local partitions = if skin then partitionsOf(c, skin) else nil
+local function shapeTriangles(
+  checker: Checker,
+  geometry: any,
+  visit: (number, number, number) -> ()
+)
+  local skin = get(checker, geometry.skin, 'NiSkinInstance')
+  local partitions = if skin then partitionsOf(checker, skin) else nil
   if partitions then
     for _, partition in partitions.partitions do
       triangleList(partition.trueTriangles, visit)
@@ -69,21 +73,21 @@ local function shapeTriangles(c: Checker, geometry: any, visit: (number, number,
 
   if geometry.data < 0 then return end
 
-  local shape = get(c, geometry.data, 'NiTriShapeData')
+  local shape = get(checker, geometry.data, 'NiTriShapeData')
   if shape then
     triangleList(shape.triangles, visit)
     return
   end
 
-  local strips = get(c, geometry.data, 'NiTriStripsData')
+  local strips = get(checker, geometry.data, 'NiTriStripsData')
   if strips then unrollStrips(strips.strips, visit) end
 end
 
 --- How many triangles `shapeTriangles` visits, and the first vertex index at or past `vertices`.
-local function countTriangles(c: Checker, geometry: any, vertices: number): (number, number?)
+local function countTriangles(checker: Checker, geometry: any, vertices: number): (number, number?)
   local count = 0
   local bad: number? = nil
-  shapeTriangles(c, geometry, function(first: number, second: number, third: number)
+  shapeTriangles(checker, geometry, function(first: number, second: number, third: number)
     count += 1
     if bad then return end
 
@@ -100,17 +104,17 @@ local function countTriangles(c: Checker, geometry: any, vertices: number): (num
 end
 
 --- nifloader.cpp `handleNiGeometry`: `influences.at(vertex)` throws past the end.
-local function checkSkinWeights(c: Checker, shape: number, skin: number, vertices: number)
-  local instance = get(c, skin, 'NiSkinInstance')
-  local data = if instance then get(c, instance.data, 'NiSkinData') else nil
+local function checkSkinWeights(checker: Checker, shape: number, skin: number, vertices: number)
+  local instance = get(checker, skin, 'NiSkinInstance')
+  local data = if instance then get(checker, instance.data, 'NiSkinData') else nil
   if not data then return end
 
   local worst = -1
   for _, bone in data.bones do
     local weights = bone.weights
-    local b, offset = weights.buffer, weights.offset
-    for i = 0, weights.count - 1 do
-      local vertex = buffer.readu16(b, offset + i * 6)
+    local bytes, offset = weights.buffer, weights.offset
+    for entry = 0, weights.count - 1 do
+      local vertex = buffer.readu16(bytes, offset + entry * 6)
       if vertex >= vertices and vertex > worst then worst = vertex end
     end
   end
@@ -118,7 +122,7 @@ local function checkSkinWeights(c: Checker, shape: number, skin: number, vertice
   if worst < 0 then return end
 
   push(
-    c,
+    checker,
     'wont_load',
     'skin_weight_out_of_range',
     shape,
@@ -128,11 +132,11 @@ local function checkSkinWeights(c: Checker, shape: number, skin: number, vertice
   )
 end
 
-local function checkGeometry(c: Checker, index: number, kind: string, state: RenderState)
-  local geometry = get(c, index, 'NiGeometry')
+local function checkGeometry(checker: Checker, index: number, kind: string, state: RenderState)
+  local geometry = get(checker, index, 'NiGeometry')
   if not geometry then return end
 
-  local shapeType = typeName(c, index)
+  local shapeType = typeName(checker, index)
   local name = geometry.name
 
   -- node.cpp `NiGeometry::post`: data of the wrong kind is silently dropped.
@@ -143,28 +147,28 @@ local function checkGeometry(c: Checker, index: number, kind: string, state: Ren
     then 'NiTriStripsData'
     elseif kind == 'NiLines' then 'NiLinesData'
     else 'NiTriShapeData'
-  if not is(c, dataIndex, expected) then
+  if not is(checker, dataIndex, expected) then
     push(
-      c,
+      checker,
       'broken',
       'wrong_geometry_data',
       index,
-      `{shapeType} "{name}" has {typeName(c, dataIndex)} rather than {expected}, so it doesn't draw`
+      `{shapeType} "{name}" has {typeName(checker, dataIndex)} rather than {expected}, so it doesn't draw`
     )
     return
   end
 
-  local data = get(c, dataIndex, 'NiGeometryData')
+  local data = get(checker, dataIndex, 'NiGeometryData')
   if not data then return end
 
   local vertices = #data.vertices
-  local triangles, bad = countTriangles(c, geometry, vertices)
-  local linesData = get(c, dataIndex, 'NiLinesData')
+  local triangles, bad = countTriangles(checker, geometry, vertices)
+  local linesData = get(checker, dataIndex, 'NiLinesData')
   local lines = if linesData then #linesData.lines else 0
   local empty = if kind == 'NiLines' then lines == 0 else triangles == 0
   if vertices == 0 or empty then
     push(
-      c,
+      checker,
       'info',
       'empty_geometry',
       index,
@@ -173,12 +177,12 @@ local function checkGeometry(c: Checker, index: number, kind: string, state: Ren
     return
   end
 
-  c.stats.shapes += 1
-  c.stats.vertices += vertices
-  c.stats.triangles += triangles
+  checker.stats.shapes += 1
+  checker.stats.vertices += vertices
+  checker.stats.triangles += triangles
   if bad then
     push(
-      c,
+      checker,
       'broken',
       'vertex_index_out_of_range',
       dataIndex,
@@ -188,7 +192,7 @@ local function checkGeometry(c: Checker, index: number, kind: string, state: Ren
 
   -- nifloader.cpp `handleNiGeometryData`: a missing UV set falls back to set 0.
   local uvSets = #data.uvList
-  local texturing = get(c, state.texturing, 'NiTexturingProperty')
+  local texturing = get(checker, state.texturing, 'NiTexturingProperty')
   if texturing then
     for slot, texture in texturing.textures do
       if not texture.enabled then continue end
@@ -196,7 +200,7 @@ local function checkGeometry(c: Checker, index: number, kind: string, state: Ren
       local set = texture.uvSet
       if slot - 1 < Constants.TextureStages and set >= uvSets and uvSets > 0 then
         push(
-          c,
+          checker,
           'broken',
           'uv_set_out_of_range',
           index,
@@ -207,17 +211,17 @@ local function checkGeometry(c: Checker, index: number, kind: string, state: Ren
   end
 
   if geometry.skin >= 0 then
-    c.stats.skinned = true
-    checkSkinWeights(c, index, geometry.skin, vertices)
+    checker.stats.skinned = true
+    checkSkinWeights(checker, index, geometry.skin, vertices)
   end
 end
 
 --- nifloader.cpp `handleBSGeometry`.
-local function checkBsGeometry(c: Checker, index: number)
-  local shape = get(c, index, 'BSTriShape')
+local function checkBsGeometry(checker: Checker, index: number)
+  local shape = get(checker, index, 'BSTriShape')
   if not shape then return end
 
-  local shapeType = typeName(c, index)
+  local shapeType = typeName(checker, index)
   local name = shape.name
   local vertices = if bit32.btest(shape.vertDesc.flags, 0x1) then #shape.vertData else 0
   local triangles = 0
@@ -237,7 +241,7 @@ local function checkBsGeometry(c: Checker, index: number)
 
   if vertices == 0 or triangles == 0 then
     push(
-      c,
+      checker,
       'info',
       'empty_geometry',
       index,
@@ -246,12 +250,12 @@ local function checkBsGeometry(c: Checker, index: number)
     return
   end
 
-  c.stats.shapes += 1
-  c.stats.vertices += vertices
-  c.stats.triangles += triangles
+  checker.stats.shapes += 1
+  checker.stats.vertices += vertices
+  checker.stats.triangles += triangles
   if bad then
     push(
-      c,
+      checker,
       'broken',
       'vertex_index_out_of_range',
       index,
@@ -262,29 +266,28 @@ local function checkBsGeometry(c: Checker, index: number)
   local skin = shape.skin
   if skin < 0 then return end
 
-  c.stats.skinned = true
+  checker.stats.skinned = true
   -- Only Fallout 4's skinning is handled; Skyrim SE's isn't yet.
   local problem: string? = nil
-  if not is(c, skin, 'BSSkinInstance') then
-    problem =
-      `"{name}" is skinned with {typeName(c, skin)}, which OpenMW doesn't support yet, so it's drawn unskinned`
+  if not is(checker, skin, 'BSSkinInstance') then
+    problem = `"{name}" is skinned with {typeName(checker, skin)}, which OpenMW doesn't support yet, so it's drawn unskinned`
   elseif not bit32.btest(shape.vertDesc.flags, 0x40) then
     problem = `"{name}" has a skin but its vertices have no skin weights, so it's drawn unskinned`
   end
 
-  if problem then push(c, 'broken', 'unsupported_skinning', index, problem) end
+  if problem then push(checker, 'broken', 'unsupported_skinning', index, problem) end
 end
 
-local function checkParticleModifier(c: Checker, modifier: number, collider: boolean)
-  local kind = recordType(c, modifier)
+local function checkParticleModifier(checker: Checker, modifier: number, collider: boolean)
+  local kind = recordType(checker, modifier)
   if collider then
     if kind ~= 'NiPlanarCollider' and kind ~= 'NiSphericalCollider' then
       push(
-        c,
+        checker,
         'broken',
         'unhandled_particle_modifier',
         modifier,
-        `Unhandled particle collider {typeName(c, modifier)}`
+        `Unhandled particle collider {typeName(checker, modifier)}`
       )
     end
 
@@ -294,15 +297,15 @@ local function checkParticleModifier(c: Checker, modifier: number, collider: boo
   if kind == 'NiParticleGrowFade' or kind == 'NiGravity' or kind == 'NiParticleBomb' then return end
 
   if kind == 'NiParticleRotation' then
-    push(c, 'info', 'particle_rotation_ignored', modifier, 'NiParticleRotation is ignored')
+    push(checker, 'info', 'particle_rotation_ignored', modifier, 'NiParticleRotation is ignored')
     return
   end
 
   if kind == 'NiParticleColorModifier' then
-    local color = get(c, modifier, 'NiParticleColorModifier')
+    local color = get(checker, modifier, 'NiParticleColorModifier')
     if color and color.data < 0 then
       push(
-        c,
+        checker,
         'broken',
         'controller_without_data',
         modifier,
@@ -314,32 +317,32 @@ local function checkParticleModifier(c: Checker, modifier: number, collider: boo
   end
 
   push(
-    c,
+    checker,
     'broken',
     'unhandled_particle_modifier',
     modifier,
-    `Unhandled particle modifier {typeName(c, modifier)}`
+    `Unhandled particle modifier {typeName(checker, modifier)}`
   )
 end
 
 --- nifloader.cpp `handleParticleSystem`, `handleParticlePrograms`.
-local function checkParticles(c: Checker, index: number)
-  local particles = get(c, index, 'NiGeometry')
+local function checkParticles(checker: Checker, index: number)
+  local particles = get(checker, index, 'NiGeometry')
   if not particles then return end
 
   local name = particles.name
-  local chain = Base.controllers(c, particles.controller)
+  local chain = Base.controllers(checker, particles.controller)
   local function isSystemController(controller: number): boolean
-    local kind = recordType(c, controller)
+    local kind = recordType(checker, controller)
     return kind == 'NiParticleSystemController' or kind == 'NiBSPArrayController'
   end
 
   local controllerIndex, controller = nil, nil
-  for i = #chain, 1, -1 do
-    local entry = chain[i]
+  for position = #chain, 1, -1 do
+    local entry = chain[position]
     if not Base.isActive(entry[2]) or not isSystemController(entry[1]) then continue end
 
-    local system = get(c, entry[1], 'NiParticleSystemController')
+    local system = get(checker, entry[1], 'NiParticleSystemController')
     if system then
       controllerIndex, controller = entry[1], system
       break
@@ -350,7 +353,7 @@ local function checkParticles(c: Checker, index: number)
     for _, entry in chain do
       if isSystemController(entry[1]) then
         push(
-          c,
+          checker,
           'info',
           'inactive_particles',
           index,
@@ -361,7 +364,7 @@ local function checkParticles(c: Checker, index: number)
     end
 
     push(
-      c,
+      checker,
       'broken',
       'particles_without_controller',
       index,
@@ -370,10 +373,10 @@ local function checkParticles(c: Checker, index: number)
     return
   end
 
-  c.stats.shapes += 1
+  checker.stats.shapes += 1
   if controller.emitter < 0 then
     push(
-      c,
+      checker,
       'broken',
       'particles_without_emitter',
       controllerIndex,
@@ -389,10 +392,10 @@ local function checkParticles(c: Checker, index: number)
 
       seen[link] = true
       count += 1
-      local object = get(c, link, 'NiParticleModifier')
+      local object = get(checker, link, 'NiParticleModifier')
       if not object then break end
 
-      checkParticleModifier(c, link, colliders)
+      checkParticleModifier(checker, link, colliders)
       link = object.next
     end
   end
@@ -402,28 +405,28 @@ local function checkParticles(c: Checker, index: number)
 end
 
 --- nifloader.cpp `handleEffect`: only enabled, sphere-mapped environment maps work.
-local function checkEffect(c: Checker, index: number)
-  if not is(c, index, 'NiTextureEffect') then
-    if c.records[index + 1] then
+local function checkEffect(checker: Checker, index: number)
+  if not is(checker, index, 'NiTextureEffect') then
+    if checker.records[index + 1] then
       push(
-        c,
+        checker,
         'info',
         'light_ignored',
         index,
-        `Unhandled effect {typeName(c, index)}; NIF lights don't light anything`
+        `Unhandled effect {typeName(checker, index)}; NIF lights don't light anything`
       )
     end
 
     return
   end
 
-  local effect = get(c, index, 'NiTextureEffect')
+  local effect = get(checker, index, 'NiTextureEffect')
   if not effect or not effect.switchState then return end
 
   -- `NiTextureEffect::TextureType::Environment_Map` and `CoordGenType::Sphere_Map`.
   if effect.textureType ~= 2 then
     push(
-      c,
+      checker,
       'broken',
       'unhandled_texture_effect',
       index,
@@ -431,7 +434,7 @@ local function checkEffect(c: Checker, index: number)
     )
   elseif effect.texture < 0 then
     push(
-      c,
+      checker,
       'broken',
       'texture_effect_without_texture',
       index,
@@ -439,7 +442,7 @@ local function checkEffect(c: Checker, index: number)
     )
   elseif effect.coordGenType ~= 2 then
     push(
-      c,
+      checker,
       'broken',
       'unhandled_texture_effect',
       index,
@@ -448,11 +451,11 @@ local function checkEffect(c: Checker, index: number)
   end
 end
 
-local function checkNode(c: Checker, index: number, node: any)
-  local kind = recordType(c, index)
+local function checkNode(checker: Checker, index: number, node: any)
+  local kind = recordType(checker, index)
   if kind == 'NiBillboardNode' then
     -- nifloader.cpp `createNode`: other modes fall back to rigid face camera.
-    local billboard = get(c, index, 'NiBillboardNode')
+    local billboard = get(checker, index, 'NiBillboardNode')
     local mode = if billboard then billboard.mode else 0
     local unhandled: string? = nil
     if mode == 3 then
@@ -465,7 +468,7 @@ local function checkNode(c: Checker, index: number, node: any)
 
     if unhandled then
       push(
-        c,
+        checker,
         'broken',
         'unhandled_billboard_mode',
         index,
@@ -473,11 +476,11 @@ local function checkNode(c: Checker, index: number, node: any)
       )
     end
   elseif kind == 'NiSortAdjustNode' then
-    local sort = get(c, index, 'NiSortAdjustNode')
+    local sort = get(checker, index, 'NiSortAdjustNode')
     if sort then
       if sort.subSorter < 0 then
         push(
-          c,
+          checker,
           'broken',
           'empty_accumulator',
           index,
@@ -485,7 +488,7 @@ local function checkNode(c: Checker, index: number, node: any)
         )
       else
         push(
-          c,
+          checker,
           'info',
           'sort_adjust_leaks',
           index,
@@ -496,19 +499,19 @@ local function checkNode(c: Checker, index: number, node: any)
   end
 
   for _, effect in node.effects do
-    if effect >= 0 then checkEffect(c, effect) end
+    if effect >= 0 then checkEffect(checker, effect) end
   end
 
   for _, child in node.children do
     if child < 0 then continue end
 
-    if get(c, child, 'NiDynamicEffect') and not c.listedEffects[child] then
+    if get(checker, child, 'NiDynamicEffect') and not checker.listedEffects[child] then
       push(
-        c,
+        checker,
         'info',
         'effect_in_children',
         child,
-        `{typeName(c, child)} is a child but in no node's effect list, so it does nothing`
+        `{typeName(checker, child)} is a child but in no node's effect list, so it does nothing`
       )
     end
   end
@@ -516,41 +519,41 @@ end
 
 --- What `handleNode` draws of a visible leaf: particles, geometry, and `BSTriShape`s, minus
 --- shadows and hidden editor markers.
-local function checkShape(c: Checker, index: number, state: RenderState)
-  local kind = recordType(c, index)
+local function checkShape(checker: Checker, index: number, state: RenderState)
+  local kind = recordType(checker, index)
   if not kind then return end
 
-  local name = nameOf(c, index)
+  local name = nameOf(checker, index)
   -- nifloader.cpp `handleNode`: particles are handled before and apart from geometry.
   if kind == 'NiParticles' then
-    checkParticles(c, index)
+    checkParticles(checker, index)
     return
   end
 
   -- Neither NiParticles nor geometry, so nothing handles them.
   if kind == 'NiParticleSystem' or kind == 'BSStripParticleSystem' then
     push(
-      c,
+      checker,
       'broken',
       'unsupported_particles',
       index,
-      `{typeName(c, index)} "{name}" isn't drawn; OpenMW only handles Morrowind-style NiParticles`
+      `{typeName(checker, index)} "{name}" isn't drawn; OpenMW only handles Morrowind-style NiParticles`
     )
     return
   end
 
   if not NiGeometryTypes[kind] and not BsGeometryTypes[kind] then return end
 
-  if Base.morrowindRules(c) then
+  if Base.morrowindRules(checker) then
     if startsWithIgnoreCase(name, 'shadow') or startsWithIgnoreCase(name, 'tri shadow') then
       return
     end
 
     if startsWithIgnoreCase(name, 'tri editormarker') then
-      if c.hasMarkers then return end
+      if checker.hasMarkers then return end
 
       push(
-        c,
+        checker,
         'broken',
         'visible_editor_marker',
         index,
@@ -561,10 +564,10 @@ local function checkShape(c: Checker, index: number, state: RenderState)
     startsWithIgnoreCase(name, 'EditorMarker')
     or startsWithIgnoreCase(name, 'VisibilityEditorMarker')
   then
-    if c.hasMarkers then return end
+    if checker.hasMarkers then return end
 
     push(
-      c,
+      checker,
       'broken',
       'visible_editor_marker',
       index,
@@ -573,9 +576,9 @@ local function checkShape(c: Checker, index: number, state: RenderState)
   end
 
   if BsGeometryTypes[kind] then
-    checkBsGeometry(c, index)
+    checkBsGeometry(checker, index)
   else
-    checkGeometry(c, index, kind, state)
+    checkGeometry(checker, index, kind, state)
   end
 end
 
@@ -583,13 +586,13 @@ type Pending = { index: number, state: RenderState? }
 
 --- One node of the render traversal; its children go on `stack`, the first on top.
 local function walkNode(
-  c: Checker,
+  checker: Checker,
   index: number,
   from: RenderState,
   seen: { [number]: boolean },
   stack: { Pending }
 )
-  local av = get(c, index, 'NiAVObject')
+  local av = get(checker, index, 'NiAVObject')
   if not av or seen[index] then return end
 
   seen[index] = true
@@ -597,84 +600,89 @@ local function walkNode(
   -- Non-root "Bounding Box" objects are dropped.
   if not from.root and string.lower(av.name) == 'bounding box' then return end
 
-  local node = get(c, index, 'NiNode')
+  local node = get(checker, index, 'NiNode')
   if node then
-    c.stats.nodes += 1
+    checker.stats.nodes += 1
   end
 
   for _, property in av.properties do
-    if property >= 0 then table.insert(c.properties, property) end
+    if property >= 0 then table.insert(checker.properties, property) end
   end
 
   -- applyNodeProperties: geometry's shader and alpha properties.
-  local geometry = get(c, index, 'NiGeometry') or get(c, index, 'BSTriShape')
+  local geometry = get(checker, index, 'NiGeometry') or get(checker, index, 'BSTriShape')
   if geometry then
-    if geometry.shaderProperty >= 0 then table.insert(c.properties, geometry.shaderProperty) end
+    if geometry.shaderProperty >= 0 then
+      table.insert(checker.properties, geometry.shaderProperty)
+    end
 
-    if geometry.alphaProperty >= 0 then table.insert(c.properties, geometry.alphaProperty) end
+    if geometry.alphaProperty >= 0 then table.insert(checker.properties, geometry.alphaProperty) end
   end
 
   for _, property in av.properties do
-    if property >= 0 and is(c, property, 'NiTexturingProperty') then state.texturing = property end
+    if property >= 0 and is(checker, property, 'NiTexturingProperty') then
+      state.texturing = property
+    end
   end
 
-  local chain = Base.controllers(c, av.controller)
+  local chain = Base.controllers(checker, av.controller)
   local hasVisController = false
   for _, entry in chain do
-    if is(c, entry[1], 'NiVisController') then hasVisController = true end
+    if is(checker, entry[1], 'NiVisController') then hasVisController = true end
   end
 
-  Base.checkNodeControllers(c, index, chain)
+  Base.checkNodeControllers(checker, index, chain)
 
   -- Hidden subtrees (flag 0x1) stay in the graph for their controllers, but only draw with an
   -- NiVisController on the hidden node itself. The collision node is hidden too.
-  local hidden = (bit32.btest(av.flags, 1) and not hasVisController) or index == c.collisionNode
+  local hidden =
+    (bit32.btest(av.flags, 1) and not hasVisController) or index == checker.collisionNode
   if node then
-    checkNode(c, index, node)
+    checkNode(checker, index, node)
     local childState = if hidden then nil else state
     local children = node.children
-    for i = #children, 1, -1 do
-      local child = children[i]
+    for position = #children, 1, -1 do
+      local child = children[position]
       if child >= 0 then table.insert(stack, { index = child, state = childState }) end
     end
   elseif not hidden then
-    checkShape(c, index, state)
+    checkShape(checker, index, state)
   end
 end
 
 --- Hidden subtrees: controllers still load, nothing draws.
 local function walkHiddenNode(
-  c: Checker,
+  checker: Checker,
   index: number,
   seen: { [number]: boolean },
   stack: { Pending }
 )
-  local av = get(c, index, 'NiAVObject')
+  local av = get(checker, index, 'NiAVObject')
   if not av or seen[index] then return end
 
   seen[index] = true
-  Base.checkNodeControllers(c, index, Base.controllers(c, av.controller))
-  local node = get(c, index, 'NiNode')
+  Base.checkNodeControllers(checker, index, Base.controllers(checker, av.controller))
+  local node = get(checker, index, 'NiNode')
   if not node then return end
 
   local children = node.children
-  for i = #children, 1, -1 do
-    local child = children[i]
+  for position = #children, 1, -1 do
+    local child = children[position]
     if child >= 0 then table.insert(stack, { index = child, state = nil }) end
   end
 end
 
 --- The render traversal, `NIFObjectLoader::handleNode`: depth first, children in order, without
 --- recursion. A child without a render state is in a hidden subtree.
-local function walk(c: Checker, root: number, state: RenderState)
+local function walk(checker: Checker, root: number, state: RenderState)
   local seen = {}
   local stack: { Pending } = { { index = root, state = state } }
   while #stack > 0 do
     local pending = table.remove(stack) :: Pending
     if pending.state then
-      walkNode(c, pending.index, pending.state, seen, stack)
+      walkNode(checker, pending.index, pending.state, seen, stack)
     else
-      walkHiddenNode(c, pending.index, seen, stack)
+      walkHiddenNode(checker, pending.index, seen, stack)
     end
   end
 end

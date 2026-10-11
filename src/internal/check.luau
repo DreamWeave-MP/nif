@@ -33,7 +33,9 @@ local function readErrorCode(message: string): string
     return string.sub(message, 1, #prefix) == prefix
   end
 
-  local function endsWith(suffix: string): boolean return string.sub(message, -#suffix) == suffix end
+  local function endsWith(suffix: string): boolean
+    return string.sub(message, -#suffix) == suffix
+  end
 
   if startsWith 'Failed to cast record pointer' then return 'wrong_link_type' end
 
@@ -66,7 +68,7 @@ local function push(
 end
 
 --- What can be told from the header of files with a record type table.
-local function checkHeaderRecords(b: buffer, report: Report, header: Header.Header)
+local function checkHeaderRecords(bytes: buffer, report: Report, header: Header.Header)
   -- Every record type is looked up in OpenMW's factory before anything is read
   -- (niffile.cpp `Reader::parse`); the first unknown one fails the file.
   for index = 0, #header.recordTypeIndices - 1 do
@@ -90,7 +92,7 @@ local function checkHeaderRecords(b: buffer, report: Report, header: Header.Head
 
   if #header.recordSizes == 0 then return end
 
-  local roots = Header.roots(header, b)
+  local roots = Header.roots(header, bytes)
   if not roots then
     -- OpenMW reads records by type rather than by size, so it may still load this.
     push(
@@ -126,21 +128,21 @@ end
 --- Checks a NIF, named by its path: only the file name is used, `.kf` files being checked as
 --- animations.
 local function check(name: string, data: buffer | string): Report
-  local b = if type(data) == 'string' then buffer.fromstring(data) else data
+  local bytes = if type(data) == 'string' then buffer.fromstring(data) else data
   local report: Report =
     { header = nil, deep = false, findings = {}, textures = {}, stats = nil, collision = nil }
   -- The header reader throws OpenMW's message for a header it refuses.
-  local ok, header = pcall(Header.parse, b)
+  local ok, header = pcall(Header.parse, bytes)
   if not ok then
     push(report, 'wont_load', 'invalid_header', tostring(header))
     return report
   end
 
   report.header = header
-  checkHeaderRecords(b, report, header)
+  checkHeaderRecords(bytes, report, header)
   if not wontLoad(report) then
     -- The reader throws `{ message, record }` for a file OpenMW refuses.
-    local read, file = pcall(Reader.open, b)
+    local read, file = pcall(Reader.open, bytes)
     if read then
       Rules.check(name, file, report)
     else

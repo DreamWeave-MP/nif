@@ -52,29 +52,29 @@ end
 local function toArray(kind: Array.Kind, list: { any }): any
   local count = #list
   local array = Array.new(kind, count) :: any
-  local b, stride = array.buffer, array.stride
-  for i, value in list do
-    local p = (i - 1) * stride
+  local bytes, stride = array.buffer, array.stride
+  for index, value in list do
+    local cursor = (index - 1) * stride
     if kind == 'u8' then
-      buffer.writeu8(b, p, value)
+      buffer.writeu8(bytes, cursor, value)
     elseif kind == 'u16' then
-      buffer.writeu16(b, p, value)
+      buffer.writeu16(bytes, cursor, value)
     elseif kind == 'i32' then
-      buffer.writei32(b, p, value)
+      buffer.writei32(bytes, cursor, value)
     elseif kind == 'f32' then
-      buffer.writef32(b, p, value)
+      buffer.writef32(bytes, cursor, value)
     elseif kind == 'tri' then
-      local x, y, z = coordinates(value)
-      buffer.writeu16(b, p, x)
-      buffer.writeu16(b, p + 2, y)
-      buffer.writeu16(b, p + 4, z)
+      local first, second, third = coordinates(value)
+      buffer.writeu16(bytes, cursor, first)
+      buffer.writeu16(bytes, cursor + 2, second)
+      buffer.writeu16(bytes, cursor + 4, third)
     elseif kind == 'vec2' or kind == 'vec3' or kind == 'vec4' then
-      local x, y, z, w = coordinates(value)
-      buffer.writef32(b, p, x)
-      buffer.writef32(b, p + 4, y)
-      if kind ~= 'vec2' then buffer.writef32(b, p + 8, z) end
+      local xComponent, yComponent, zComponent, wComponent = coordinates(value)
+      buffer.writef32(bytes, cursor, xComponent)
+      buffer.writef32(bytes, cursor + 4, yComponent)
+      if kind ~= 'vec2' then buffer.writef32(bytes, cursor + 8, zComponent) end
 
-      if kind == 'vec4' then buffer.writef32(b, p + 12, w) end
+      if kind == 'vec4' then buffer.writef32(bytes, cursor + 12, wComponent) end
     else
       error(`a {kind} array is built with the array module, not from a list`, 0)
     end
@@ -107,8 +107,8 @@ local function merge(base: any, value: any, field: string): any
   -- UV sets default to no sets, so there's no array to take each set's kind from.
   if field == 'uvSets' then
     local sets = {}
-    for i, set in value do
-      sets[i] = if Array.isArray(set) then set else toArray('vec2', set)
+    for index, set in value do
+      sets[index] = if Array.isArray(set) then set else toArray('vec2', set)
     end
 
     return sets
@@ -148,26 +148,33 @@ local function triangles(data: any): { { number } }
   local found = {}
   if data.type == 'NiTriShapeData' or data.type == 'NiTriShapeDynamicData' then
     local list = data.triangles
-    for i = 0, list.count - 1 do
-      local p = list.offset + i * 6
-      local b = list.buffer
+    for index = 0, list.count - 1 do
+      local cursor = list.offset + index * 6
+      local bytes = list.buffer
       table.insert(
         found,
-        { buffer.readu16(b, p), buffer.readu16(b, p + 2), buffer.readu16(b, p + 4) }
+        {
+          buffer.readu16(bytes, cursor),
+          buffer.readu16(bytes, cursor + 2),
+          buffer.readu16(bytes, cursor + 4),
+        }
       )
     end
   elseif data.type == 'NiTriStripsData' then
     local strips, lengths = data.strips, data.stripLengths
     local point, total = 0, strips.count
-    for i = 1, lengths.count do
-      local length = lengths:get(i)
+    for strip = 1, lengths.count do
+      local length = lengths:get(strip)
       local available = math.max(0, math.min(length, total - point))
-      for k = 0, available - 3 do
-        local a, b, c =
-          strips:get(point + k + 1), strips:get(point + k + 2), strips:get(point + k + 3)
-        if a == b or b == c or a == c then continue end
+      for step = 0, available - 3 do
+        local first, second, third =
+          strips:get(point + step + 1), strips:get(point + step + 2), strips:get(point + step + 3)
+        if first == second or second == third or first == third then continue end
 
-        table.insert(found, if k % 2 == 0 then { a, b, c } else { a, c, b })
+        table.insert(
+          found,
+          if step % 2 == 0 then { first, second, third } else { first, third, second }
+        )
       end
 
       point += length
@@ -181,19 +188,22 @@ end
 local function vertices(data: any): { vector }
   local list = data.vertices
   local found = table.create(list.count) :: { vector }
-  for i = 0, list.count - 1 do
-    local p = list.offset + i * 12
-    local b = list.buffer
-    found[i + 1] =
-      vector.create(buffer.readf32(b, p), buffer.readf32(b, p + 4), buffer.readf32(b, p + 8))
+  for index = 0, list.count - 1 do
+    local cursor = list.offset + index * 12
+    local bytes = list.buffer
+    found[index + 1] = vector.create(
+      buffer.readf32(bytes, cursor),
+      buffer.readf32(bytes, cursor + 4),
+      buffer.readf32(bytes, cursor + 8)
+    )
   end
 
   return found
 end
 
 --- A `vector`'s length in 32 bits: glam's `(x * x + y * y) + z * z`, then the square root.
-local function length(v: vector): number
-  local square = v * v
+local function length(value: vector): number
+  local square = value * value
   return f32(math.sqrt(f32(f32(square.x + square.y) + square.z)))
 end
 
@@ -230,20 +240,20 @@ local function computeNormals(data: any, faces: { { number } })
   local points = vertices(data)
   local sums = table.create(#points, vector.zero) :: { vector }
   for _, face in faces do
-    local a, b, c = points[face[1] + 1], points[face[2] + 1], points[face[3] + 1]
-    if not a or not b or not c then continue end
+    local first, second, third = points[face[1] + 1], points[face[2] + 1], points[face[3] + 1]
+    if not first or not second or not third then continue end
 
     -- The cross product's length is twice the triangle's area, which does the weighting.
-    local normal = vector.cross(b - a, c - a)
+    local normal = vector.cross(second - first, third - first)
     sums[face[1] + 1] += normal
     sums[face[2] + 1] += normal
     sums[face[3] + 1] += normal
   end
 
   local normals = table.create(#points) :: { vector }
-  for i, sum in sums do
+  for index, sum in sums do
     local reciprocal = f32(1 / length(sum))
-    normals[i] = if reciprocal == reciprocal
+    normals[index] = if reciprocal == reciprocal
         and reciprocal < math.huge
         and reciprocal > 0
       then sum * reciprocal
@@ -262,8 +272,8 @@ local function derive(record: any, fields: { [string]: any })
     and fields.numTriangles == nil
   then
     local count = 0
-    for i = 1, record.stripLengths.count do
-      count += math.max(record.stripLengths:get(i) - 2, 0)
+    for strip = 1, record.stripLengths.count do
+      count += math.max(record.stripLengths:get(strip) - 2, 0)
     end
 
     record.numTriangles = math.min(count, 0xFFFF)
