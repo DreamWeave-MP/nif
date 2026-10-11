@@ -22,7 +22,9 @@ local Strings = Text.decoded
 --- struct reads what its record left.
 local Stash = {}
 
-local ReadStruct, WriteStruct, StructLinks = {}, {}, {}
+local ReadStruct = {}
+local WriteStruct = {}
+local StructLinks = {}
 
 function ReadStruct.BoneData(bytes: buffer, cursor: number): (Types.BoneData, number)
   local rotation = Identity

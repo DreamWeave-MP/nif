@@ -859,7 +859,10 @@ local function moduleText(body: { string }, prefix: string, own: boolean?): stri
   end
 
   if own then
-    table.insert(out, 'local read, default, rows, shared = {}, {}, {}, {}')
+    table.insert(out, 'local read = {}')
+    table.insert(out, 'local default = {}')
+    table.insert(out, 'local rows = {}')
+    table.insert(out, 'local shared = {}')
     table.insert(out, '')
   end
 

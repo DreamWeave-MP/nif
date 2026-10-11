@@ -1310,7 +1310,7 @@ end
 --- The values records hold inside them, shared by the record modules.
 local function structsModule(): string
   local out: Out = { lines = {}, depth = 0, pending = false }
-  lines(out, { 'local ReadStruct, WriteStruct, StructLinks = {}, {}, {}', '' })
+  lines(out, { 'local ReadStruct = {}', 'local WriteStruct = {}', 'local StructLinks = {}', '' })
 
   for _, name in sortedKeys(Schema.Structs) do
     if Inline[name] then continue end
