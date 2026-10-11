@@ -102,6 +102,106 @@ local RandomObjectsLinks = {
 --- the `unitCube` data (record 17).
 local ConeScaleAt, EmptyNameAt, CubeVertexAt = 278, 4850, 228786
 
+--- The digests the NIF port campaign froze, each blessed only after jess-nif gave the same
+--- answer: `fixture/<file>/<suite>` and `edit/<scenario>`.
+local Golden = support.goldens 'nif.txt'
+
+local Vertices = { { 0, 0, 0 }, { 10, 0, 0 }, { 10, 10, 0 }, { 0, 10, 3 }, { 5, 5, 8 } }
+local Triangles = { { 0, 1, 2 }, { 0, 2, 3 }, { 2, 3, 4 } }
+local Uvs = { { 0, 0 }, { 1, 0 }, { 1, 1 }, { 0, 1 }, { 0.5, 0.5 } }
+local Colors = { { 1, 0, 0, 1 }, { 0, 1, 0, 1 }, { 0, 0, 1, 1 }, { 1, 1, 1, 0.5 }, { 0, 0, 0, 1 } }
+
+--- A shape's options, under `root`.
+local function shapeSpec(root: number): nif.ShapeSpec
+  return {
+    name = 'Tri Shape',
+    vertices = Vertices,
+    triangles = Triangles,
+    uvSets = { Uvs, Uvs },
+    vertexColors = Colors,
+    texture = 'textures\\tx_a.dds',
+    material = { alpha = 0.5, emissiveColor = { 0.2, 0.3, 0.4 } },
+    parent = root,
+    translation = { 1, 2, 3 },
+    rotation = { 0, -1, 0, 1, 0, 0, 0, 0, 1 },
+    scale = 2,
+  } :: any
+end
+
+--- The campaign's building and editing scenarios (the model's half of its
+--- `edit_differential.luau`), each returning its save; `golden/nif.txt` has every one's digest.
+local Scenarios: { [string]: () -> buffer } = {}
+
+Scenarios['bare records'] = function(): buffer
+  local file = nif.new()
+  local roots = {}
+  for _, name in nif.recordTypes do
+    table.insert(roots, file:insert { type = name })
+  end
+
+  file.roots = roots
+  return file:save()
+end
+
+Scenarios['shape'] = function(): buffer
+  local file = nif.new()
+  local root = file:insert { type = 'NiNode', name = 'Root' }
+  file:shape(shapeSpec(root))
+  file.roots = { root }
+  return file:save()
+end
+
+Scenarios['strips'] = function(): buffer
+  local file = nif.new()
+  local data = file:insert {
+    type = 'NiTriStripsData',
+    vertices = Vertices,
+    stripLengths = { 4, 3 },
+    strips = { 0, 1, 3, 2, 2, 3, 4 },
+  }
+
+  file.roots = { file:insert { type = 'NiTriStrips', geometryData = data } }
+  return file:save()
+end
+
+Scenarios['remove'] = function(): buffer
+  local file = nif.open(RandomObjects)
+  file:remove(file:find({ type = 'NiTriShape', name = 'cube' })[1])
+  return file:save()
+end
+
+Scenarios['attach and detach'] = function(): buffer
+  local file = nif.open(RandomObjects)
+  local sphere = file:find({ name = '^sphere$' })[1]
+  file:detach(file:find({ name = '^empty 2$' })[1], sphere)
+  file:attach(file.roots[1], sphere)
+  return file:save()
+end
+
+Scenarios['textures'] = function(): buffer
+  local file = nif.open(AllTypes)
+  local path = file:textures()[1].path
+  file:setTexture(string.upper((string.gsub(path, '\\', '/'))), 'textures/replaced.dds')
+  return file:save()
+end
+
+Scenarios['bounds'] = function(): buffer
+  local file = nif.open(RandomObjects)
+  local index = file:find({ type = 'NiTriShapeData' })[1]
+  local data = file:record(index) :: any
+  for position = 1, data.vertices.count do
+    local vertex = data.vertices:get(position)
+    data.vertices:set(position, vector.create(vertex.x * 3, vertex.y + 7, vertex.z))
+  end
+
+  file:computeNormals(index)
+  file:updateBounds()
+  return file:save()
+end
+
+local ScenarioNames =
+  { 'attach and detach', 'bare records', 'bounds', 'remove', 'shape', 'strips', 'textures' }
+
 local function typesOf(file: nif.Nif): string
   local names = {}
   for index = 0, file.count - 1 do
@@ -651,6 +751,197 @@ suite.describe('preservation', function()
     expect(reopened.count).toBe(1)
     expect((reopened:record(0) :: any).children:toTable()).toEqual { -1 }
   end)
+end)
+
+suite.describe('building', function()
+  suite.it(
+    'inserts every record type bare, and each saves and decodes back to the same bytes',
+    function()
+      local built = buffer.tostring(Scenarios['bare records']())
+      local file = nif.open(built)
+      expect(file.count).toBe(112)
+      expect(#file.roots).toBe(112)
+      expect(typesOf(file)).toBe(table.concat(nif.recordTypes, ' '))
+      expect(linksOf(file)).toEqual {}
+      decodeAll(file)
+      expect(difference(saved(file), built)).toBeNil()
+    end
+  )
+
+  suite.it('adds a shape with its data, texture, and material under a node', function()
+    local file = nif.new()
+    local root = file:insert { type = 'NiNode', name = 'Root' }
+    expect(root).toBe(0)
+    expect(file:shape(shapeSpec(root))).toBe(5)
+    expect(file.count).toBe(6)
+    expect(file:reachableCount()).toBe(0)
+    file.roots = { root }
+    expect(file:reachableCount()).toBe(6)
+
+    local reopened = nif.open(file:save())
+    expect(typesOf(reopened)).toBe 'NiNode NiTriShapeData NiSourceTexture NiTexturingProperty NiMaterialProperty NiTriShape'
+    expect(linksOf(reopened)).toEqual { '0:5', '3:2', '5:3,4,1' }
+
+    local shape = reopened:record(5) :: any
+    expect(shape.name).toBe 'Tri Shape'
+    expect(shape.geometryData).toBe(1)
+    expect(shape.properties:toTable()).toEqual { 3, 4 }
+    expect(shape.translation).toBe(vector.create(1, 2, 3))
+    expect(shape.scale).toBe(2)
+    expect(shape.rotation).toEqual {
+      vector.create(0, -1, 0),
+      vector.create(1, 0, 0),
+      vector.create(0, 0, 1),
+    }
+
+    local data = reopened:record(1) :: any
+    expect(data.vertices:toTable()).toEqual {
+      vector.create(0, 0, 0),
+      vector.create(10, 0, 0),
+      vector.create(10, 10, 0),
+      vector.create(0, 10, 3),
+      vector.create(5, 5, 8),
+    }
+
+    expect(data.triangles:toTable()).toEqual {
+      vector.create(0, 1, 2),
+      vector.create(0, 2, 3),
+      vector.create(2, 3, 4),
+    }
+    expect(#data.uvSets).toBe(2)
+    expect(data.uvSets[2]:get(5)).toBe(vector.create(0.5, 0.5, 0))
+    expect(data.vertexColors.count).toBe(5)
+
+    -- Derived, not given: the sphere around the extremes' midpoint, sqrt(66) out, and each
+    -- vertex's area-weighted normal; the second vertex is only in the flat first triangle.
+    expect(data.bound).toEqual { center = vector.create(5, 5, 4), radius = 8.124038696289062 }
+    expect(data.normals.count).toBe(5)
+    expect(data.normals:get(2)).toBe(vector.create(0, 0, 1))
+    expect((reopened:record(2) :: any).source).toEqual { external = 'textures\\tx_a.dds' }
+    expect((reopened:record(3) :: any).textureMaps.base.texture).toBe(2)
+
+    local material = reopened:record(4) :: any
+    expect(material.alpha).toBe(0.5)
+    expect(material.emissiveColor).toBe(
+      vector.create(0.20000000298023224, 0.30000001192092896, 0.4000000059604645)
+    )
+    expect(reopened:textures()).toEqual { { record = 2, path = 'textures\\tx_a.dds' } }
+  end)
+
+  suite.it('counts a strip\'s triangles and derives its bound and normals', function()
+    local reopened = nif.open(Scenarios['strips']())
+    expect(typesOf(reopened)).toBe 'NiTriStripsData NiTriStrips'
+    expect(reopened.roots).toEqual { 1 }
+
+    local data = reopened:record(0) :: any
+    expect(data.numTriangles).toBe(3)
+    expect(data.stripLengths:toTable()).toEqual { 4, 3 }
+    expect(data.strips:toTable()).toEqual { 0, 1, 3, 2, 2, 3, 4 }
+    expect(data.bound).toEqual { center = vector.create(5, 5, 4), radius = 8.124038696289062 }
+    expect(data.normals.count).toBe(5)
+  end)
+
+  suite.it('refuses records and options it doesn\'t know', function()
+    local file = nif.open(RandomObjects)
+    expect(function() file:insert { type = 'NiBogus' } end).toThrow 'unknown NIF record type \'NiBogus\''
+    expect(function() file:insert { name = 'untyped' } end).toThrow 'a record table needs a type, such as "NiNode"'
+    expect(function() file:shape({ vertices = {}, triangles = {}, colour = 1 } :: any) end).toThrow 'Nif:shape has no option \'colour\''
+    expect(function() file:shape { vertices = {}, triangles = {}, uvs = {}, uvSets = {} } end).toThrow 'pass uvs or uvSets, not both'
+    expect(file.count).toBe(20)
+  end)
+end)
+
+suite.describe('editing', function()
+  suite.it('moves a shape from one node to another', function()
+    local file = nif.open(RandomObjects)
+    local sphere = file:find({ name = '^sphere$' })[1]
+    local parent = file:find({ name = '^empty 2$' })[1]
+    expect(sphere).toBe(7)
+    expect(parent).toBe(6)
+    expect(file:detach(parent, sphere)).toBe(true)
+    expect(file:detach(parent, sphere)).toBe(false)
+    file:attach(file.roots[1], sphere)
+
+    local reopened = nif.open(file:save())
+    expect(reopened.count).toBe(20)
+    expect((reopened:record(0) :: any).children:toTable()).toEqual { 1, 3, 9, 11, 12, 14, 18, 7 }
+    expect((reopened:record(6) :: any).children:toTable()).toEqual {}
+  end)
+
+  suite.it('attaches to and detaches from nodes only', function()
+    local file = nif.open(RandomObjects)
+    expect(function() file:attach(1, 2) end).toThrow 'record 1 isn\'t a node'
+    expect(function() file:detach(2, 1) end).toThrow 'record 2 isn\'t a node'
+    expect(function() file:attach(99, 1) end).toThrow 'record 99 isn\'t a node'
+  end)
+
+  suite.it('repoints a texture spelled another way, in that record alone', function()
+    local file = nif.open(AllTypes)
+    local before = recordDigests(nif.open(AllTypes))
+    expect(file:setTexture('no/such/texture.dds', 'textures/other.dds')).toBe(0)
+    expect(file:setTexture('G7/TEXTESTS/LIGHT07_0.BMP', 'textures/replaced.dds')).toBe(1)
+
+    local bytes = saved(file)
+    expect(#bytes).toBe(#AllTypes - 4)
+
+    local reopened = nif.open(bytes)
+    expect(reopened:textures()).toEqual { { record = 15, path = 'textures/replaced.dds' } }
+    expect(typesOf(reopened)).toBe(AllTypesRecords)
+    expect(linksOf(reopened)).toEqual(AllTypesLinks)
+
+    local after = recordDigests(reopened)
+    for index = 0, 84 do
+      if index ~= 15 then expect(after[index]).toBe(before[index]) end
+    end
+  end)
+
+  suite.it('recomputes normals and bounds from moved vertices', function()
+    local file = nif.open(RandomObjects)
+    local index = file:find({ type = 'NiTriShapeData' })[1]
+    expect(index).toBe(2)
+
+    local data = file:record(index) :: any
+    expect(data.bound).toEqual { center = vector.zero, radius = 141.42135620117188 }
+    for position = 1, data.vertices.count do
+      local vertex = data.vertices:get(position)
+      data.vertices:set(position, vector.create(vertex.x * 3, vertex.y + 7, vertex.z))
+    end
+
+    expect(data.bound.radius).toBe(141.42135620117188)
+    file:computeNormals(index)
+    expect(file:updateBounds()).toBe(7)
+
+    -- Three times as wide and 7 further along y: sqrt(300^2 + 100^2) out from (0, 7, 0).
+    local bound = (nif.open(file:save()):record(index) :: any).bound
+    expect(bound).toEqual { center = vector.create(0, 7, 0), radius = 316.2277526855469 }
+    expect(function() file:computeNormals(0) end).toThrow 'record 0 isn\'t geometry data'
+    expect(function() file:computeNormals(99) end).toThrow 'record 99 isn\'t geometry data'
+  end)
+end)
+
+suite.describe('jess-nif\'s answers', function()
+  for _, asset in Assets do
+    suite.it(`hold for {asset.name}'s records and saves`, function()
+      local observed = support.digest(support.attempt(function(): unknown
+        local file = nif.open(buffer.fromstring(asset.bytes))
+        local untouched = support.xxh3(file:save())
+        local records = {}
+        for index = 0, file.count - 1 do
+          records[index + 1] = file:record(index)
+        end
+
+        return { roots = file.roots, records = records, untouched = untouched, saved = file:save() }
+      end))
+      expect(observed).toBe(Golden[`fixture/{asset.name}/morrowind`])
+    end)
+  end
+
+  for _, name in ScenarioNames do
+    suite.it(
+      `hold for the save of '{name}'`,
+      function() expect(support.digest(Scenarios[name]())).toBe(Golden[`edit/{name}`]) end
+    )
+  end
 end)
 
 suite.describe('errors', function()

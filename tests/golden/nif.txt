@@ -1,0 +1,19 @@
+edit/attach and detach	e8c8db48f9efb470
+edit/bare records	22ecea169d8c60c8
+edit/bounds	29cb477a6b5598d2
+edit/remove	cd925a84ccf50d99
+edit/shape	2d3085630cf53f9e
+edit/strips	5fd72d6a165da13e
+edit/textures	efc93af15dde92a7
+fixture/all_types.nif/check	85c74bdf2f4b3c72
+fixture/all_types.nif/fix	c9ee48a4c12ed4e5
+fixture/all_types.nif/gamebryo	91528d4b3be9c853
+fixture/all_types.nif/info	65ae6bc893145adb
+fixture/all_types.nif/morrowind	a7038816f3c35913
+fixture/all_types.nif/scene	6a4bfd6fb0f680f2
+fixture/random_objects.nif/check	9c91531c0c0042e5
+fixture/random_objects.nif/fix	77515f64241b8a2a
+fixture/random_objects.nif/gamebryo	7dfdbe20997a6687
+fixture/random_objects.nif/info	80a95a6a8dcd85e1
+fixture/random_objects.nif/morrowind	3406c2f7f1e0a234
+fixture/random_objects.nif/scene	3fce95fae4b3f931
