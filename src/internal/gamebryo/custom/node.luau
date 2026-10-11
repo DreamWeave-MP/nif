@@ -5,15 +5,19 @@
 OpenMW's `components/nif/node.hpp` values and checks the schema can't state as steps.
 ]]
 
-local G = require '../stream'
-local L = require '../links'
+local Stream = require '../stream'
+local Links = require '../links'
 
-type Stream = G.Stream
+type Stream = Stream.Stream
 
 local custom = {}
 
-local function vec3(b: buffer, p: number): vector
-  return vector.create(buffer.readf32(b, p), buffer.readf32(b, p + 4), buffer.readf32(b, p + 8))
+local function vec3(bytes: buffer, cursor: number): vector
+  return vector.create(
+    buffer.readf32(bytes, cursor),
+    buffer.readf32(bytes, cursor + 4),
+    buffer.readf32(bytes, cursor + 8)
+  )
 end
 
 --- `BoundingVolume::BASE_BV`: no volume.
@@ -23,98 +27,105 @@ local NoBounds = table.freeze { type = 0xFFFFFFFF }
 function custom.noBounds(): any return NoBounds end
 
 --- `BoundingVolume`: a volume of the shape its type names, only that shape kept.
-function custom.boundingVolume(s: Stream, p: number): (any, number)
-  local b = s.b
-  local kind = buffer.readu32(b, p)
-  p += 4
-  if kind == 0xFFFFFFFF then return { type = kind }, p end
+function custom.boundingVolume(stream: Stream, cursor: number): (any, number)
+  local bytes = stream.bytes
+  local kind = buffer.readu32(bytes, cursor)
+  cursor += 4
+  if kind == 0xFFFFFFFF then return { type = kind }, cursor end
 
   if kind == 0 then
-    return { type = kind, sphere = { center = vec3(b, p), radius = buffer.readf32(b, p + 12) } },
-      p + 16
+    return {
+      type = kind,
+      sphere = { center = vec3(bytes, cursor), radius = buffer.readf32(bytes, cursor + 12) },
+    },
+      cursor + 16
   end
 
   if kind == 1 then
-    local volume = { center = vec3(b, p), axes = G.mat3(b, p + 12), extents = vec3(b, p + 48) }
-    return { type = kind, box = volume }, p + 60
+    local volume = {
+      center = vec3(bytes, cursor),
+      axes = Stream.mat3(bytes, cursor + 12),
+      extents = vec3(bytes, cursor + 48),
+    }
+    return { type = kind, box = volume }, cursor + 60
   end
 
   if kind == 2 then
     local volume = {
-      center = vec3(b, p),
-      axis = vec3(b, p + 12),
-      extent = buffer.readf32(b, p + 24),
-      radius = buffer.readf32(b, p + 28),
+      center = vec3(bytes, cursor),
+      axis = vec3(bytes, cursor + 12),
+      extent = buffer.readf32(bytes, cursor + 24),
+      radius = buffer.readf32(bytes, cursor + 28),
     }
 
-    return { type = kind, capsule = volume }, p + 32
+    return { type = kind, capsule = volume }, cursor + 32
   end
 
   if kind == 3 then
-    local radius = buffer.readf32(b, p)
-    p += 4
+    local radius = buffer.readf32(bytes, cursor)
+    cursor += 4
     local extent0, extent1 = 0, 0
-    if s.version >= 0x04020100 then
-      extent0, extent1 = buffer.readf32(b, p), buffer.readf32(b, p + 4)
-      p += 8
+    if stream.version >= 0x04020100 then
+      extent0, extent1 = buffer.readf32(bytes, cursor), buffer.readf32(bytes, cursor + 4)
+      cursor += 8
     end
 
     local volume = {
       radius = radius,
       extent0 = extent0,
       extent1 = extent1,
-      center = vec3(b, p),
-      axis0 = vec3(b, p + 12),
-      axis1 = vec3(b, p + 24),
+      center = vec3(bytes, cursor),
+      axis0 = vec3(bytes, cursor + 12),
+      axis1 = vec3(bytes, cursor + 24),
     }
 
-    return { type = kind, lozenge = volume }, p + 36
+    return { type = kind, lozenge = volume }, cursor + 36
   end
 
   if kind == 4 then
-    local count = buffer.readu32(b, p)
-    p += 4
+    local count = buffer.readu32(bytes, cursor)
+    cursor += 4
     local children = table.create(count) :: { any }
-    for i = 1, count do
-      children[i], p = custom.boundingVolume(s, p)
+    for index = 1, count do
+      children[index], cursor = custom.boundingVolume(stream, cursor)
     end
 
-    return { type = kind, children = children }, p
+    return { type = kind, children = children }, cursor
   end
 
   if kind == 5 then
     local plane = {
-      buffer.readf32(b, p),
-      buffer.readf32(b, p + 4),
-      buffer.readf32(b, p + 8),
-      buffer.readf32(b, p + 12),
+      buffer.readf32(bytes, cursor),
+      buffer.readf32(bytes, cursor + 4),
+      buffer.readf32(bytes, cursor + 8),
+      buffer.readf32(bytes, cursor + 12),
     }
-    p += 16
+    cursor += 16
     local origin = vector.zero
-    if s.version >= 0x04020100 then
-      origin = vec3(b, p)
-      p += 12
+    if stream.version >= 0x04020100 then
+      origin = vec3(bytes, cursor)
+      cursor += 12
     end
 
-    return { type = kind, halfSpace = { plane = plane, origin = origin } }, p
+    return { type = kind, halfSpace = { plane = plane, origin = origin } }, cursor
   end
 
-  return G.fail(`Unhandled BoundingVolume type: {kind}`)
+  return Stream.fail(`Unhandled BoundingVolume type: {kind}`)
 end
 
 --- `NiDefaultAVObjectPalette`'s objects: name and link pairs, a repeated name replacing the
 --- earlier pair's link.
-function custom.avObjectPalette(s: Stream, p: number): ({ { any } }, number)
-  local b = s.b
-  local count = buffer.readu32(b, p)
-  p += 4
+function custom.avObjectPalette(stream: Stream, cursor: number): ({ { any } }, number)
+  local bytes = stream.bytes
+  local count = buffer.readu32(bytes, cursor)
+  cursor += 4
   local objects: { { any } }, at: { [string]: number } = {}, {}
   for _ = 1, count do
     local name
-    name, p = G.sizedU32(s, p)
-    local index = buffer.readi32(b, p)
-    p += 4
-    if index < -1 then G.invalidLink(index) end
+    name, cursor = Stream.sizedU32(stream, cursor)
+    local index = buffer.readi32(bytes, cursor)
+    cursor += 4
+    if index < -1 then Stream.invalidLink(index) end
 
     local existing = at[name]
     if existing then
@@ -125,21 +136,21 @@ function custom.avObjectPalette(s: Stream, p: number): ({ { any } }, number)
     end
   end
 
-  return objects, p
+  return objects, cursor
 end
 
-function custom.paletteLinks(r: any, records: { any }, classes: { string }, index: number)
-  for _, object in r.objects do
-    L.link(object[2], 'NiAVObject', records, classes, index)
+function custom.paletteLinks(record: any, records: { any }, classes: { string }, index: number)
+  for _, object in record.objects do
+    Links.link(object[2], 'NiAVObject', records, classes, index)
   end
 end
 
 --- `BSVertexDesc`: a `u64` of nibbles; Skyrim SE always stores full-precision vertices.
-function custom.vertexDesc(s: Stream, p: number): (any, number)
-  local b = s.b
-  local low, high = buffer.readu32(b, p), buffer.readu32(b, p + 4)
+function custom.vertexDesc(stream: Stream, cursor: number): (any, number)
+  local bytes = stream.bytes
+  local low, high = buffer.readu32(bytes, cursor), buffer.readu32(bytes, cursor + 4)
   local flags = bit32.extract(high, 12, 12)
-  if s.bethVersion == 100 then flags = bit32.bor(flags, 0x400) end
+  if stream.bethVersion == 100 then flags = bit32.bor(flags, 0x400) end
 
   local desc = {
     vertexDataSize = bit32.extract(low, 0, 4),
@@ -155,22 +166,22 @@ function custom.vertexDesc(s: Stream, p: number): (any, number)
     flags = flags,
   }
 
-  return desc, p + 8
+  return desc, cursor + 8
 end
 
-local function bytes4(b: buffer, p: number): { number }
+local function bytes4(bytes: buffer, cursor: number): { number }
   return {
-    buffer.readu8(b, p),
-    buffer.readu8(b, p + 1),
-    buffer.readu8(b, p + 2),
-    buffer.readu8(b, p + 3),
+    buffer.readu8(bytes, cursor),
+    buffer.readu8(bytes, cursor + 1),
+    buffer.readu8(bytes, cursor + 2),
+    buffer.readu8(bytes, cursor + 3),
   }
 end
 
-local function halves(b: buffer, p: number, count: number): { number }
+local function halves(bytes: buffer, cursor: number, count: number): { number }
   local list = table.create(count) :: { number }
-  for i = 1, count do
-    list[i] = buffer.readu16(b, p + (i - 1) * 2)
+  for index = 1, count do
+    list[index] = buffer.readu16(bytes, cursor + (index - 1) * 2)
   end
 
   return list
@@ -210,9 +221,14 @@ local Zero2: { number } = table.freeze { 0, 0 }
 
 --- `BSVertexData` for each of `count` vertices, laid out as `flags` says, each read when asked
 --- for.
-function custom.vertexData(s: Stream, p: number, count: number, flags: number): (any, number)
-  local function read(b: buffer, p: number): any
-    local zero4 = G.zero4
+function custom.vertexData(
+  stream: Stream,
+  cursor: number,
+  count: number,
+  flags: number
+): (any, number)
+  local function read(bytes: buffer, cursor: number): any
+    local zero4 = Stream.zero4
     local vertex = {
       vertex = zero4,
       halfVertex = zero4,
@@ -228,97 +244,97 @@ function custom.vertexData(s: Stream, p: number, count: number, flags: number): 
     if bit32.btest(flags, 0x1) then
       if bit32.btest(flags, 0x400) then
         vertex.vertex = {
-          buffer.readf32(b, p),
-          buffer.readf32(b, p + 4),
-          buffer.readf32(b, p + 8),
-          buffer.readf32(b, p + 12),
+          buffer.readf32(bytes, cursor),
+          buffer.readf32(bytes, cursor + 4),
+          buffer.readf32(bytes, cursor + 8),
+          buffer.readf32(bytes, cursor + 12),
         }
-        p += 16
+        cursor += 16
       else
-        vertex.halfVertex = halves(b, p, 4)
-        p += 8
+        vertex.halfVertex = halves(bytes, cursor, 4)
+        cursor += 8
       end
     end
 
     if bit32.btest(flags, 0x2) then
-      vertex.uv = halves(b, p, 2)
-      p += 4
+      vertex.uv = halves(bytes, cursor, 2)
+      cursor += 4
     end
 
     if bit32.btest(flags, 0x8) then
-      vertex.normal = bytes4(b, p)
-      p += 4
+      vertex.normal = bytes4(bytes, cursor)
+      cursor += 4
       if bit32.btest(flags, 0x10) then
-        vertex.tangent = bytes4(b, p)
-        p += 4
+        vertex.tangent = bytes4(bytes, cursor)
+        cursor += 4
       end
     end
 
     if bit32.btest(flags, 0x20) then
-      vertex.vertColor = bytes4(b, p)
-      p += 4
+      vertex.vertColor = bytes4(bytes, cursor)
+      cursor += 4
     end
 
     if bit32.btest(flags, 0x40) then
-      vertex.boneWeights = halves(b, p, 4)
-      vertex.boneIndices = bytes4(b, p + 8)
-      p += 12
+      vertex.boneWeights = halves(bytes, cursor, 4)
+      vertex.boneIndices = bytes4(bytes, cursor + 8)
+      cursor += 12
     end
 
     if bit32.btest(flags, 0x100) then
-      vertex.eyeData = buffer.readf32(b, p)
-      p += 4
+      vertex.eyeData = buffer.readf32(bytes, cursor)
+      cursor += 4
     end
 
     return vertex
   end
 
-  return G.rows(s, p, count, vertexSize(flags), read)
+  return Stream.rows(stream, cursor, count, vertexSize(flags), read)
 end
 
 --- A string with a `u16` length before it.
-function custom.sizedU16(s: Stream, p: number): (string, number)
-  return G.sized(s, p + 2, buffer.readu16(s.b, p))
+function custom.sizedU16(stream: Stream, cursor: number): (string, number)
+  return Stream.sized(stream, cursor + 2, buffer.readu16(stream.bytes, cursor))
 end
 
 --- A `u32` count of rows of `width` floats.
-function custom.f32Rows(s: Stream, p: number, width: number): ({ { number } }, number)
-  local b = s.b
-  local count = buffer.readu32(b, p)
-  p += 4
-  G.checkSize(s, count * width * 4)
+function custom.f32Rows(stream: Stream, cursor: number, width: number): ({ { number } }, number)
+  local bytes = stream.bytes
+  local count = buffer.readu32(bytes, cursor)
+  cursor += 4
+  Stream.checkSize(stream, count * width * 4)
   local rows = table.create(count) :: { { number } }
-  for i = 1, count do
+  for index = 1, count do
     local row = table.create(width) :: { number }
-    for k = 1, width do
-      row[k] = buffer.readf32(b, p)
-      p += 4
+    for column = 1, width do
+      row[column] = buffer.readf32(bytes, cursor)
+      cursor += 4
     end
 
-    rows[i] = row
+    rows[index] = row
   end
 
-  return rows, p
+  return rows, cursor
 end
 
 --- A `u32` count of lists, each a `u32` count of sized strings.
-function custom.stringLists(s: Stream, p: number): ({ { string } }, number)
-  local b = s.b
-  local count = buffer.readu32(b, p)
-  p += 4
+function custom.stringLists(stream: Stream, cursor: number): ({ { string } }, number)
+  local bytes = stream.bytes
+  local count = buffer.readu32(bytes, cursor)
+  cursor += 4
   local lists = table.create(count) :: { { string } }
-  for i = 1, count do
-    local length = buffer.readu32(b, p)
-    p += 4
+  for index = 1, count do
+    local length = buffer.readu32(bytes, cursor)
+    cursor += 4
     local list = table.create(length) :: { string }
-    for k = 1, length do
-      list[k], p = G.sizedU32(s, p)
+    for entry = 1, length do
+      list[entry], cursor = Stream.sizedU32(stream, cursor)
     end
 
-    lists[i] = list
+    lists[index] = list
   end
 
-  return lists, p
+  return lists, cursor
 end
 
 return custom

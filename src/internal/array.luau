@@ -69,12 +69,12 @@ for kind in Metas do
   )
 end
 
---- A view of `count` elements of `kind` at `offset` in `b`, which must hold them: the readers only
---- view bytes `open` has already walked past.
-local function view(b: buffer, offset: number, count: number, kind: Kind): Array
+--- A view of `count` elements of `kind` at `offset` in `bytes`, which must hold them: the readers
+--- only view bytes `open` has already walked past.
+local function view(bytes: buffer, offset: number, count: number, kind: Kind): Array
   if count == 0 then return Empty[kind] end
 
-  return make({ buffer = b, offset = offset, count = count, stride = Strides[kind] }, kind)
+  return make({ buffer = bytes, offset = offset, count = count, stride = Strides[kind] }, kind)
 end
 
 --- A new array of `count` zeroed elements.
@@ -90,7 +90,7 @@ local function new(kind: Kind, count: number): Array
 end
 
 --- What fills each lazy array's bytes, until something reads it.
-local Pending: { [ArrayFields]: (b: buffer) -> () } = setmetatable({}, { __mode = 'k' }) :: any
+local Pending: { [ArrayFields]: (bytes: buffer) -> () } = setmetatable({}, { __mode = 'k' }) :: any
 
 --- Each kind's metatable for lazy arrays, made when a kind first has one.
 local LazyMetas: { [Kind]: Meta } = {}
@@ -99,11 +99,11 @@ local LazyMetas: { [Kind]: Meta } = {}
 --- ordinary array of its kind.
 local function fill(array: ArrayFields, kind: Kind)
   local stride = Strides[kind]
-  local b = buffer.create(array.count * stride)
+  local bytes = buffer.create(array.count * stride)
   local pending = Pending[array]
   Pending[array] = nil
-  pending(b)
-  rawset(array :: any, 'buffer', b)
+  pending(bytes)
+  rawset(array :: any, 'buffer', bytes)
   rawset(array :: any, 'offset', 0)
   setmetatable(array :: any, Metas[kind])
 end
@@ -111,7 +111,7 @@ end
 --- An array of `count` elements of `kind` whose bytes `filler` writes into a new buffer the
 --- first time the array is read: a value derived from the file (a remapped index list) costs
 --- nothing until something reads it. `#array` and `count` don't fill it.
-local function lazy(kind: Kind, count: number, filler: (b: buffer) -> ()): Array
+local function lazy(kind: Kind, count: number, filler: (bytes: buffer) -> ()): Array
   if count == 0 then return Empty[kind] end
 
   local meta = LazyMetas[kind]
@@ -131,17 +131,17 @@ local function lazy(kind: Kind, count: number, filler: (b: buffer) -> ()): Array
   return setmetatable(array, meta :: any) :: any
 end
 
-local function write(w: Writer, array: ArrayFields)
+local function write(writer: Writer, array: ArrayFields)
   local length = array.count * array.stride
-  Writer.reserve(w, length)
-  buffer.copy(w.b, w.p, array.buffer, array.offset, length)
-  w.p += length
+  Writer.reserve(writer, length)
+  buffer.copy(writer.bytes, writer.cursor, array.buffer, array.offset, length)
+  writer.cursor += length
 end
 
 local function sum(array: ArrayFields): number
-  local b, offset, total = array.buffer, array.offset, 0
-  for i = 0, array.count - 1 do
-    total += buffer.readu16(b, offset + i * 2)
+  local bytes, offset, total = array.buffer, array.offset, 0
+  for index = 0, array.count - 1 do
+    total += buffer.readu16(bytes, offset + index * 2)
   end
 
   return total

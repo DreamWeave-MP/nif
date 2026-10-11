@@ -117,7 +117,7 @@ class('NiParticleSystem', 'NiParticles', {
   { 'skin', 'link:NiSkinInstance', when = 'BV >= SSE' },
   { 'shaderProperty', 'link:BSShaderProperty', when = 'BV >= SSE' },
   { 'alphaProperty', 'link:NiAlphaProperty', when = 'BV >= SSE' },
-  { 'vertDesc', 'custom:vertexDesc', when = 'BV >= SSE', default = 'C.noVertexDesc()' },
+  { 'vertDesc', 'custom:vertexDesc', when = 'BV >= SSE', default = 'Custom.noVertexDesc()' },
   { 'nearFar', 'u16', fixed = 4, when = 'BV >= SKY', default = 'table.create(4, 0)' },
   { 'data', 'link:NiGeometryData', when = 'BV >= SSE' },
   { 'worldSpace', 'bool', when = 'V >= @10.1.0.0', default = 'true' },

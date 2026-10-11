@@ -253,15 +253,15 @@ local function affine(rotation: { vector }, translation: vector, scale: number):
   }
 end
 
---- `a` after `b`: the transform from `b`'s space to `a`'s parent's.
-local function multiply(a: Affine, b: Affine): Affine
-  local x, y, z = a[1], a[2], a[3]
-  local c1, c2, c3, t = b[1], b[2], b[3], b[4]
+--- `outer` after `inner`: the transform from `inner`'s space to `outer`'s parent's.
+local function multiply(outer: Affine, inner: Affine): Affine
+  local xAxis, yAxis, zAxis = outer[1], outer[2], outer[3]
+  local c1, c2, c3, translation = inner[1], inner[2], inner[3], inner[4]
   return {
-    x * c1.x + y * c1.y + z * c1.z,
-    x * c2.x + y * c2.y + z * c2.z,
-    x * c3.x + y * c3.y + z * c3.z,
-    x * t.x + y * t.y + z * t.z + a[4],
+    xAxis * c1.x + yAxis * c1.y + zAxis * c1.z,
+    xAxis * c2.x + yAxis * c2.y + zAxis * c2.z,
+    xAxis * c3.x + yAxis * c3.y + zAxis * c3.z,
+    xAxis * translation.x + yAxis * translation.y + zAxis * translation.z + outer[4],
   }
 end
 
@@ -394,8 +394,8 @@ local function build(nif: any): Scene
     local seen: { [number]: boolean } = {}
     local stack: { number } = {}
     local children = nif:record(root).children
-    for i = 1, children.count do
-      table.insert(stack, children:get(i) :: number)
+    for entry = 1, children.count do
+      table.insert(stack, children:get(entry) :: number)
     end
 
     while #stack > 0 do
@@ -410,8 +410,8 @@ local function build(nif: any): Scene
       seen[key] = true
       if is(name, 'NiNode') then
         local inner = nif:record(key).children
-        for i = 1, inner.count do
-          table.insert(stack, inner:get(i) :: number)
+        for entry = 1, inner.count do
+          table.insert(stack, inner:get(entry) :: number)
         end
       end
     end
@@ -470,8 +470,8 @@ local function build(nif: any): Scene
   local function applyProperties(key: number, av: any, inherited: MaterialSources): MaterialSources
     local properties = table.clone(inherited)
     local list = av.properties
-    for i = 1, list.count do
-      local link = list:get(i)
+    for entry = 1, list.count do
+      local link = list:get(entry)
       local name = linked(key, 'properties', link)
       if not name then continue end
 
@@ -500,7 +500,9 @@ local function build(nif: any): Scene
       elseif is(name, 'NiProperty') then
         report(link, 'UnsupportedProperty')
         continue
-      else
+      end
+
+      if not slot then
         wrongType(key, 'properties', name)
         continue
       end
@@ -552,35 +554,35 @@ local function build(nif: any): Scene
       local unrolled = Writer.new(64)
       local source, from = strips.buffer, strips.offset
       local point, total = 0, strips.count
-      for i = 1, lengths.count do
-        local length = lengths:get(i)
+      for strip = 1, lengths.count do
+        local length = lengths:get(strip)
         -- A strip longer than the points left has the points left.
         local available = math.max(0, math.min(length, total - point))
-        for k = 0, available - 3 do
-          local base = from + (point + k) * 2
-          local a = buffer.readu16(source, base)
-          local b = buffer.readu16(source, base + 2)
-          local c = buffer.readu16(source, base + 4)
-          if a == b or b == c or a == c then continue end
+        for step = 0, available - 3 do
+          local base = from + (point + step) * 2
+          local first = buffer.readu16(source, base)
+          local second = buffer.readu16(source, base + 2)
+          local third = buffer.readu16(source, base + 4)
+          if first == second or second == third or first == third then continue end
 
           Writer.reserve(unrolled, 6)
-          local p = unrolled.p
-          buffer.writeu16(unrolled.b, p, a)
-          if k % 2 == 0 then
-            buffer.writeu16(unrolled.b, p + 2, b)
-            buffer.writeu16(unrolled.b, p + 4, c)
+          local cursor = unrolled.cursor
+          buffer.writeu16(unrolled.bytes, cursor, first)
+          if step % 2 == 0 then
+            buffer.writeu16(unrolled.bytes, cursor + 2, second)
+            buffer.writeu16(unrolled.bytes, cursor + 4, third)
           else
-            buffer.writeu16(unrolled.b, p + 2, c)
-            buffer.writeu16(unrolled.b, p + 4, b)
+            buffer.writeu16(unrolled.bytes, cursor + 2, third)
+            buffer.writeu16(unrolled.bytes, cursor + 4, second)
           end
 
-          unrolled.p = p + 6
+          unrolled.cursor = cursor + 6
         end
 
         point += length
       end
 
-      triangles, at, triangleCount = unrolled.b, 0, unrolled.p // 6
+      triangles, at, triangleCount = unrolled.bytes, 0, unrolled.cursor // 6
     else
       local list = data.triangles
       triangles, at, triangleCount = list.buffer, list.offset, list.count
@@ -591,8 +593,8 @@ local function build(nif: any): Scene
       return done(nil)
     end
 
-    for i = 0, triangleCount * 3 - 1 do
-      if buffer.readu16(triangles, at + i * 2) >= vertexCount then
+    for corner = 0, triangleCount * 3 - 1 do
+      if buffer.readu16(triangles, at + corner * 2) >= vertexCount then
         report(key, 'IndexOutOfRange')
         return done(nil)
       end
@@ -616,24 +618,25 @@ local function build(nif: any): Scene
       report(key, 'AttributeLengthMismatch')
     end
 
-    local firstVertex, firstIndex, firstUv = positions.p // 12, indices.p // 2, uvs.p // 8
-    local function copy(w: Writer.Writer, view: any, length: number)
-      Writer.reserve(w, length)
-      buffer.copy(w.b, w.p, view.buffer, view.offset, length)
-      w.p += length
+    local firstVertex, firstIndex, firstUv =
+      positions.cursor // 12, indices.cursor // 2, uvs.cursor // 8
+    local function copy(writer: Writer.Writer, view: any, length: number)
+      Writer.reserve(writer, length)
+      buffer.copy(writer.bytes, writer.cursor, view.buffer, view.offset, length)
+      writer.cursor += length
     end
 
-    local function fill(w: Writer.Writer, value: number, count: number)
-      Writer.reserve(w, count * 4)
+    local function fill(writer: Writer.Writer, value: number, count: number)
+      Writer.reserve(writer, count * 4)
       if value == 0 then
-        buffer.fill(w.b, w.p, 0, count * 4)
+        buffer.fill(writer.bytes, writer.cursor, 0, count * 4)
       else
-        for i = 0, count - 1 do
-          buffer.writef32(w.b, w.p + i * 4, value)
+        for element = 0, count - 1 do
+          buffer.writef32(writer.bytes, writer.cursor + element * 4, value)
         end
       end
 
-      w.p += count * 4
+      writer.cursor += count * 4
     end
 
     copy(positions, vertices, vertexCount * 12)
@@ -660,16 +663,16 @@ local function build(nif: any): Scene
     end
 
     Writer.reserve(indices, triangleCount * 6)
-    buffer.copy(indices.b, indices.p, triangles, at, triangleCount * 6)
-    indices.p += triangleCount * 6
+    buffer.copy(indices.bytes, indices.cursor, triangles, at, triangleCount * 6)
+    indices.cursor += triangleCount * 6
 
     local index = #geometries
     local bound = data.bound
     table.insert(geometries, {
       source = key,
       recordType = name,
-      vertices = { firstVertex, positions.p // 12 },
-      indices = { firstIndex, indices.p // 2 },
+      vertices = { firstVertex, positions.cursor // 12 },
+      indices = { firstIndex, indices.cursor // 2 },
       firstUv = firstUv,
       uvSets = if uvsMatch then uvSets else 0,
       hasNormals = hasNormals,
@@ -919,7 +922,7 @@ local function build(nif: any): Scene
 
   local stack: { any } = {}
   local onPath: { [number]: boolean } = {}
-  local NoRoot = { markers = false, collision = nil }
+  local noRoot = { markers = false, collision = nil }
 
   --- Adds the node `visit` reaches, and queues its children.
   local function enter(visit: Visit)
@@ -998,8 +1001,8 @@ local function build(nif: any): Scene
     if not is(name, 'NiNode') then return end
 
     local effects = av.effects
-    for i = 1, effects.count do
-      local effect = effects:get(i)
+    for entry = 1, effects.count do
+      local effect = effects:get(entry)
       local effectName = linked(key, 'effects', effect)
       if not effectName then continue end
 
@@ -1016,10 +1019,10 @@ local function build(nif: any): Scene
 
     local active = if name == 'NiSwitchNode' then av.activeIndex else nil
     local children = av.children
-    for i = children.count, 1, -1 do
-      local switchedOff = active ~= nil and active ~= i - 1
+    for position = children.count, 1, -1 do
+      local switchedOff = active ~= nil and active ~= position - 1
       table.insert(stack, {
-        key = children:get(i) :: number,
+        key = children:get(position) :: number,
         linkedFrom = key,
         field = 'children',
         parent = node,
@@ -1031,12 +1034,12 @@ local function build(nif: any): Scene
   end
 
   local roots = nif.roots
-  for i = #roots, 1, -1 do
+  for position = #roots, 1, -1 do
     table.insert(stack, {
-      key = roots[i],
+      key = roots[position],
       properties = {},
       visibility = 'Visible',
-      root = NoRoot,
+      root = noRoot,
     })
   end
 
@@ -1052,10 +1055,10 @@ local function build(nif: any): Scene
 
   --- Whether every weight of `skin` names a vertex below `vertexCount`.
   local function skinFits(skin: Skin, vertexCount: number): boolean
-    for b = skin.bones[1] + 1, skin.bones[2] do
-      local range = skinBones[b].weights
-      for i = range[1], range[2] - 1 do
-        if buffer.readu16(skinVertices.b, i * 2) >= vertexCount then return false end
+    for bone = skin.bones[1] + 1, skin.bones[2] do
+      local range = skinBones[bone].weights
+      for weight = range[1], range[2] - 1 do
+        if buffer.readu16(skinVertices.bytes, weight * 2) >= vertexCount then return false end
       end
     end
 
@@ -1077,8 +1080,8 @@ local function build(nif: any): Scene
     local fits = true
     for _, bone in boneData do
       local weights = bone.vertexWeights
-      for i = 0, weights.count - 1 do
-        if buffer.readu16(weights.buffer, weights.offset + i * 6) >= vertexCount then
+      for entry = 0, weights.count - 1 do
+        if buffer.readu16(weights.buffer, weights.offset + entry * 6) >= vertexCount then
           fits = false
           break
         end
@@ -1093,8 +1096,8 @@ local function build(nif: any): Scene
     end
 
     local firstBone = #skinBones
-    for i, bone in boneData do
-      local boneKey = bones:get(i)
+    for position, bone in boneData do
+      local boneKey = bones:get(position)
       if boneKey >= 0 then
         local boneName = linked(key, 'bones', boneKey)
         if boneName and not is(boneName, 'NiAVObject') then wrongType(key, 'bones', boneName) end
@@ -1102,23 +1105,31 @@ local function build(nif: any): Scene
 
       local weights = bone.vertexWeights
       local count = weights.count
-      local firstWeight = skinWeights.p // 4
+      local firstWeight = skinWeights.cursor // 4
       Writer.reserve(skinVertices, count * 2)
       Writer.reserve(skinWeights, count * 4)
       local from, at = weights.buffer, weights.offset
-      for k = 0, count - 1 do
-        buffer.writeu16(skinVertices.b, skinVertices.p + k * 2, buffer.readu16(from, at + k * 6))
-        buffer.writeu32(skinWeights.b, skinWeights.p + k * 4, buffer.readu32(from, at + k * 6 + 2))
+      for entry = 0, count - 1 do
+        buffer.writeu16(
+          skinVertices.bytes,
+          skinVertices.cursor + entry * 2,
+          buffer.readu16(from, at + entry * 6)
+        )
+        buffer.writeu32(
+          skinWeights.bytes,
+          skinWeights.cursor + entry * 4,
+          buffer.readu32(from, at + entry * 6 + 2)
+        )
       end
 
-      skinVertices.p += count * 2
-      skinWeights.p += count * 4
+      skinVertices.cursor += count * 2
+      skinWeights.cursor += count * 4
       table.insert(skinBones, {
         source = if boneKey >= 0 then boneKey else nil,
         node = if boneKey >= 0 then firstNode[boneKey] else nil,
         bind = affine(bone.rotation, bone.translation, bone.scale),
         bound = { center = bone.bound.center, radius = bone.bound.radius },
-        weights = { firstWeight, skinWeights.p // 4 },
+        weights = { firstWeight, skinWeights.cursor // 4 },
       })
     end
 
@@ -1167,10 +1178,10 @@ local function build(nif: any): Scene
       indices = Writer.finish(indices),
       skinVertices = Writer.finish(skinVertices),
       skinWeights = Writer.finish(skinWeights),
-      vertexCount = positions.p // 12,
-      uvCount = uvs.p // 8,
-      indexCount = indices.p // 2,
-      weightCount = skinWeights.p // 4,
+      vertexCount = positions.cursor // 12,
+      uvCount = uvs.cursor // 8,
+      indexCount = indices.cursor // 2,
+      weightCount = skinWeights.cursor // 4,
     },
     issues = issues,
   }
@@ -1389,8 +1400,8 @@ local function dump(scene: Scene): string
   table.insert(lines, 'skins:')
   for index, skin in scene.skins do
     local weights = 0
-    for b = skin.bones[1] + 1, skin.bones[2] do
-      local range = scene.skinBones[b].weights
+    for bone = skin.bones[1] + 1, skin.bones[2] do
+      local range = scene.skinBones[bone].weights
       weights += range[2] - range[1]
     end
 

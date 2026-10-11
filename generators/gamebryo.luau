@@ -6,11 +6,16 @@ Turns `gamebryo_schema.luau` into the multi-version reader's codec modules under
 `nif/gamebryo/`: `structs.luau`, one module per record class in `records/`, and `load.luau`,
 which requires those on first use:
 
-  jess run generators/gamebryo.luau src/internal/gamebryo
+  jess run --capability filesystem.read --capability filesystem.write \
+    generators/gamebryo.luau src/internal/gamebryo
 
 A record class's `read` is one straight-line function over its bases' fields and its own, every
 field a local until one table constructor at the end; its `check` is OpenMW's post-load pass:
 every link must point to a record of the class it names, then the class's own checks.
+
+What is written is the committed source as it stands, in the repository's Luau style: nothing
+formats it afterwards. A reader takes the `stream` and a `cursor`, the position it reads the
+stream's `bytes` at, and returns what it read and the cursor after it.
 
 The schema's steps, in reading order:
 
@@ -20,27 +25,30 @@ The schema's steps, in reading order:
   repeated name assigns the same local; a dotted name assigns into a table local.
 - `{ name, expr = '...', when? }` computes a field from earlier ones.
 - `{ skip = n | 'expr', when? }` skips bytes.
-- `{ ret = 'condition' }` stops reading when the condition holds.
+- `{ stop = 'condition' }` stops reading when the condition holds.
 - `{ check = 'condition', message = 'template' }` fails unless the condition holds.
 
 A class's `first` steps are read before its base's fields, the most derived class's first; a
 `bare` class reads none of its bases' fields, which keep their defaults; `bases` names bases
-whose fields are read only when a condition holds, as `{ NiGeometry = 'BV < SSE' }`. `ret`
+whose fields are read only when a condition holds, as `{ NiGeometry = 'BV < SSE' }`. `stop`
 ends the whole read, so only a class nothing derives from, or a struct, may use it.
 
 Conditions and expressions see `V` (version), `UV` (user version), `BV` (Bethesda version),
-`RN` (the record's name), and every earlier field by name. `@a.b.c.d` is a version;
+`RN` (the record's name), and every earlier field by name; the readers spell those four out, as
+`version`, `userVersion`, `bethVersion`, and `recordName`. `@a.b.c.d` is a version;
 `FO3`, `SKY`, `SSE`, `FO4`, `F76`, `STF` are Bethesda versions; `VER_MW`, `VER_OB_OLD`,
-`VER_OB`, `VER_BGS` are file versions.
+`VER_OB`, `VER_BGS` are file versions. An expression may also call the reader's modules by the
+names it has for them: `Stream`, `Custom`, `ReadStruct`, and `DefaultStruct`.
 
 Kinds: `u8 i8 u16 i16 u32 i32 u64 f32 f16 bool string sstring estring palette vec2 vec3 vec4
 quat mat3 sphere`, `link:<Class>` (`link:any` is checked only for its range), `links:<Class>`,
 a struct's name, and `custom:<name>(args)`, a function of `nif/gamebryo/custom.luau` taking the
-stream, the position, and the args, returning the value and the position after it. A `link:`
+stream, the cursor, and the args, returning the value and the cursor after it. A `link:`
 field with a `count`, `list`, or `fixed` is a list of links, checked like `links:`.
 ]]
 
 local Classes = require '../src/internal/gamebryo/classes'
+local Layout = require './layout'
 local Schema = require './gamebryo_schema'
 
 -- Each part registers its header's classes and structs.
@@ -60,6 +68,21 @@ type Definition = Schema.Definition
 
 local outDir = ...
 if not outDir then error('usage: gamebryo.luau <output folder>', 0) end
+
+--- The names a generated reader gives its own values. A field is read into a local of its own
+--- name, so no field may have one of these.
+local Reserved: { [string]: boolean } = {
+  stream = true,
+  bytes = true,
+  cursor = true,
+  version = true,
+  userVersion = true,
+  bethVersion = true,
+  recordName = true,
+  count = true,
+  elements = true,
+  index = true,
+}
 
 local Sizes: { [string]: number } = {
   u8 = 1,
@@ -113,72 +136,99 @@ local Constants: { [string]: string } = {
   VER_BGS = '0x14020007',
 }
 
---- An expression with its versions and constants written out.
+--- What the schema's conditions call the file's versions and the record's name, and the locals a
+--- reader keeps them in.
+local Words: { [string]: string } = {
+  ['V'] = 'version',
+  ['UV'] = 'userVersion',
+  ['BV'] = 'bethVersion',
+  ['RN'] = 'recordName',
+}
+
+--- An expression with its versions and constants written out, in the reader's own names.
 local function expand(text: string): string
   text = string.gsub(
     text,
     '@(%d+)%.(%d+)%.(%d+)%.(%d+)',
-    function(a: string, b: string, c: string, d: string)
+    function(major: string, minor: string, patch: string, revision: string)
       local value = (
-        (tonumber(a) :: number * 256 + tonumber(b) :: number) * 256 + tonumber(c) :: number
+        (tonumber(major) :: number * 256 + tonumber(minor) :: number) * 256
+        + tonumber(patch) :: number
       )
           * 256
-        + tonumber(d) :: number
+        + tonumber(revision) :: number
       return string.format('0x%08X', value)
     end
   )
   text = string.gsub(
     text,
     '%f[%w_]([%u_%d]+)%f[^%w_]',
-    function(word: string) return Constants[word] or word end
+    function(word: string) return Constants[word] or Words[word] or word end
   )
   return text
 end
 
---- Lines written so far, the indentation depth, and whether a block just closed, so the next
---- statement at its depth needs a blank line before it.
-type Out = { lines: { string }, depth: number, pending: boolean? }
-
---- Whether `line` opens a block or table, which the next line may follow without a blank line.
-local function opener(line: string?): boolean
-  if not line or line == '' then return true end
-
-  local code = string.gsub(line, '^%s+', '')
-  return string.sub(code, -4) == 'then'
-    or string.sub(code, -2) == 'do'
-    or string.sub(code, -1) == '{'
-    or code == 'else'
-    or string.sub(code, 1, 9) == 'function '
-    or string.sub(code, 1, 15) == 'local function '
-end
+--- Lines written so far, the indentation depth, whether a block just closed, so the next
+--- statement at its depth needs a blank line before it, and whether one just opened, so the next
+--- follows its first line with none.
+type Out = { lines: { string }, depth: number, pending: boolean?, opened: boolean? }
 
 local function blank(out: Out)
-  if not opener(out.lines[#out.lines]) then table.insert(out.lines, '') end
+  local last = out.lines[#out.lines]
+  if last and last ~= '' and not out.opened then table.insert(out.lines, '') end
 end
 
+--- One statement, broken over several lines when it doesn't fit on one (`layout.luau`); a
+--- statement that takes several is set apart like a block.
 local function emit(out: Out, line: string)
-  if out.pending then
+  if line == '' then
     out.pending = false
     blank(out)
+    return
   end
 
-  table.insert(out.lines, string.rep('  ', out.depth) .. line)
+  local wrapped = Layout.wrap(line, out.depth)
+  if out.pending or #wrapped > 1 then blank(out) end
+
+  table.move(wrapped, 1, #wrapped, #out.lines + 1, out.lines)
+  out.pending, out.opened = #wrapped > 1, false
 end
 
 --- Opens a block, after a blank line unless it starts its own block: compound statements are
 --- paragraphs, as the Luau style has them.
 local function open(out: Out, line: string)
-  out.pending = false
   blank(out)
-  emit(out, line)
+  local wrapped = Layout.wrap(line, out.depth)
+  table.move(wrapped, 1, #wrapped, #out.lines + 1, out.lines)
   out.depth += 1
+  out.pending, out.opened = false, true
 end
 
+--- Closes a block, or with `else` turns the open `if` block to its other branch.
 local function close(out: Out, line: string?)
   out.depth -= 1
-  out.pending = false
-  emit(out, line or 'end')
-  out.pending = line == nil or line == 'end'
+  table.insert(out.lines, string.rep('  ', out.depth) .. (line or 'end'))
+
+  if line == 'else' then
+    out.depth += 1
+    out.pending, out.opened = false, true
+  else
+    out.pending, out.opened = line == nil or line == 'end', false
+  end
+end
+
+--- A function that is one statement: on its header's line when it fits there.
+local function oneLine(out: Out, header: string, statement: string)
+  local whole = `{header} {statement} end`
+
+  if out.depth * 2 + #whole <= Layout.Width then
+    emit(out, whole)
+    return
+  end
+
+  open(out, header)
+  emit(out, statement)
+  close(out)
 end
 
 local function isLink(kind: string): boolean return string.sub(kind, 1, 5) == 'link:' end
@@ -213,10 +263,10 @@ local function default(step: Step): string
   if step.count or step.list then
     if Views[kind] then return `Empties.{Views[kind]}` end
 
-    return 'G.empty'
+    return 'Stream.empty'
   end
 
-  if step.fixed then return 'G.empty' end
+  if step.fixed then return 'Stream.empty' end
 
   if
     Sizes[kind]
@@ -238,24 +288,26 @@ local function default(step: Step): string
 
   if kind == 'vec2' or kind == 'vec3' then return 'vector.zero' end
 
-  if kind == 'vec4' then return 'G.zero4' end
+  if kind == 'vec4' then return 'Stream.zero4' end
 
-  if kind == 'quat' then return 'G.unitQuat' end
+  if kind == 'quat' then return 'Stream.unitQuat' end
 
-  if kind == 'mat3' then return 'G.identity()' end
+  if kind == 'mat3' then return 'Stream.identity()' end
 
-  if kind == 'sphere' then return 'G.noSphere' end
+  if kind == 'sphere' then return 'Stream.noSphere' end
 
   if isLink(kind) then return '-1' end
 
-  if isLinks(kind) then return 'G.empty' end
+  if isLinks(kind) then return 'Stream.empty' end
 
-  if isStruct(kind) then return `D.{kind}()` end
+  if isStruct(kind) then return `DefaultStruct.{kind}()` end
 
   return 'nil'
 end
 
-local function at(offset: number): string return if offset == 0 then 'p' else `p + {offset}` end
+local function at(offset: number): string
+  return if offset == 0 then 'cursor' else `cursor + {offset}`
+end
 
 --- A struct of unconditional fixed-size fields as one constructor reading at constant offsets,
 --- and its size; nil for any other struct, which is read by a call.
@@ -275,13 +327,16 @@ local function inlineStruct(kind: string): (string?, number)
       or step.fixed
       or step.expr
       or step.skip
-      or step.ret
+      or step.stop
       or step.check
     then
       return nil, 0
     end
 
-    local f = function(k: number): string return `buffer.readf32(b, {at(offset + k)})` end
+    local function float(extra: number): string
+      return `buffer.readf32(bytes, {at(offset + extra)})`
+    end
+
     local value, size
     if
       fieldKind == 'u8'
@@ -292,20 +347,20 @@ local function inlineStruct(kind: string): (string?, number)
       or fieldKind == 'i32'
       or fieldKind == 'f32'
     then
-      value, size = `buffer.read{fieldKind}(b, {at(offset)})`, Sizes[fieldKind]
+      value, size = `buffer.read{fieldKind}(bytes, {at(offset)})`, Sizes[fieldKind]
     elseif fieldKind == 'f16' then
-      value, size = `buffer.readu16(b, {at(offset)})`, 2
+      value, size = `buffer.readu16(bytes, {at(offset)})`, 2
     elseif fieldKind == 'vec2' then
-      value, size = `vector.create({f(0)}, {f(4)}, 0)`, 8
+      value, size = `vector.create({float(0)}, {float(4)}, 0)`, 8
     elseif fieldKind == 'vec3' then
-      value, size = `vector.create({f(0)}, {f(4)}, {f(8)})`, 12
+      value, size = `vector.create({float(0)}, {float(4)}, {float(8)})`, 12
     elseif fieldKind == 'vec4' then
-      -- A call, not a constructor: the formatter would break four reads over several lines.
-      value, size = `G.vec4(b, {at(offset)})`, 16
+      -- A call, not a constructor: four reads would take a line each.
+      value, size = `Stream.vec4(bytes, {at(offset)})`, 16
     elseif fieldKind == 'quat' then
-      value, size = `G.quat(b, {at(offset)})`, 16
+      value, size = `Stream.quat(bytes, {at(offset)})`, 16
     elseif fieldKind == 'mat3' then
-      value, size = `G.mat3(b, {at(offset)})`, 36
+      value, size = `Stream.mat3(bytes, {at(offset)})`, 36
     else
       return nil, 0
     end
@@ -323,9 +378,9 @@ local function versionOnly(expression: string): boolean
   local text = string.gsub(expand(expression), '0x%x+', '')
   for word in string.gmatch(text, '[%a_][%w_]*') do
     if
-      word ~= 'V'
-      and word ~= 'UV'
-      and word ~= 'BV'
+      word ~= 'version'
+      and word ~= 'userVersion'
+      and word ~= 'bethVersion'
       and word ~= 'and'
       and word ~= 'or'
       and word ~= 'not'
@@ -338,14 +393,14 @@ local function versionOnly(expression: string): boolean
 end
 
 --- Whether every `kind` struct in a file takes the same bytes: fixed-size fields, read or not by
---- the versions alone. A list of them is read as rows (`G.structRows`), each element when it is
---- asked for.
+--- the versions alone. A list of them is read as rows (`Stream.structRows`), each element when it
+--- is asked for.
 local function versionFixed(kind: string): boolean
   local definition = Schema.structs[kind]
   if not definition or definition.base then return false end
 
   for _, step in definition.fields do
-    if step.count or step.list or step.fixed or step.expr or step.ret or step.check then
+    if step.count or step.list or step.fixed or step.expr or step.stop or step.check then
       return false
     end
 
@@ -371,10 +426,10 @@ local function versionFixed(kind: string): boolean
 end
 
 local function f32(offset: number): string
-  return if offset == 0 then 'buffer.readf32(b, p)' else `buffer.readf32(b, p + {offset})`
+  return `buffer.readf32(bytes, {at(offset)})`
 end
 
---- Reads one `kind` value into `target` and moves `p` past it.
+--- Reads one `kind` value into `target` and moves `cursor` past it.
 local function readInto(out: Out, target: string, kind: string)
   local size = Sizes[kind]
   if
@@ -386,84 +441,83 @@ local function readInto(out: Out, target: string, kind: string)
     or kind == 'i32'
     or kind == 'f32'
   then
-    emit(out, `{target} = buffer.read{kind}(b, p)`)
-    emit(out, `p += {size}`)
+    emit(out, `{target} = buffer.read{kind}(bytes, cursor)`)
+    emit(out, `cursor += {size}`)
   elseif kind == 'f16' then
-    emit(out, `{target} = buffer.readu16(b, p)`)
-    emit(out, 'p += 2')
+    emit(out, `{target} = buffer.readu16(bytes, cursor)`)
+    emit(out, 'cursor += 2')
   elseif kind == 'u64' then
-    emit(out, `{target} = buffer.readu32(b, p) + buffer.readu32(b, p + 4) * 4294967296`)
-    emit(out, 'p += 8')
+    emit(
+      out,
+      `{target} = buffer.readu32(bytes, cursor) + buffer.readu32(bytes, cursor + 4) * 4294967296`
+    )
+    emit(out, 'cursor += 8')
   elseif kind == 'bool' then
-    open(out, 'if V < 0x04010000 then')
-    emit(out, `{target} = buffer.readi32(b, p) ~= 0`)
-    emit(out, 'p += 4')
+    open(out, 'if version < 0x04010000 then')
+    emit(out, `{target} = buffer.readi32(bytes, cursor) ~= 0`)
+    emit(out, 'cursor += 4')
     close(out, 'else')
-    out.depth += 1
-    emit(out, `{target} = buffer.readi8(b, p) ~= 0`)
-    emit(out, 'p += 1')
+    emit(out, `{target} = buffer.readi8(bytes, cursor) ~= 0`)
+    emit(out, 'cursor += 1')
     close(out)
   elseif kind == 'string' then
     -- The string table, from 20.1.0.1, inline: most strings in later files.
-    open(out, 'if V >= 0x14010001 then')
-    emit(
-      out,
-      `{target} = s.strings[buffer.readu32(b, p) + 1] or G.stringIndex(s, buffer.readu32(b, p))`
-    )
-    emit(out, 'p += 4')
+    open(out, 'if version >= 0x14010001 then')
+    local index = 'buffer.readu32(bytes, cursor)'
+    emit(out, `{target} = stream.strings[{index} + 1] or Stream.stringIndex(stream, {index})`)
+    emit(out, 'cursor += 4')
     close(out, 'else')
-    out.depth += 1
-    emit(out, `{target}, p = G.sizedU32(s, p)`)
+    emit(out, `{target}, cursor = Stream.sizedU32(stream, cursor)`)
     close(out)
   elseif kind == 'sstring' then
-    emit(out, `{target}, p = G.sizedU32(s, p)`)
+    emit(out, `{target}, cursor = Stream.sizedU32(stream, cursor)`)
   elseif kind == 'estring' then
-    emit(out, `{target}, p = G.export(s, p)`)
+    emit(out, `{target}, cursor = Stream.export(stream, cursor)`)
   elseif kind == 'palette' then
-    emit(out, `{target}, p = G.palette(s, p)`)
+    emit(out, `{target}, cursor = Stream.palette(stream, cursor)`)
   elseif kind == 'vec2' then
     emit(out, `{target} = vector.create({f32(0)}, {f32(4)}, 0)`)
-    emit(out, 'p += 8')
+    emit(out, 'cursor += 8')
   elseif kind == 'vec3' then
     emit(out, `{target} = vector.create({f32(0)}, {f32(4)}, {f32(8)})`)
-    emit(out, 'p += 12')
+    emit(out, 'cursor += 12')
   elseif kind == 'vec4' then
     emit(out, `{target} = \{ {f32(0)}, {f32(4)}, {f32(8)}, {f32(12)} }`)
-    emit(out, 'p += 16')
+    emit(out, 'cursor += 16')
   elseif kind == 'quat' then
     emit(out, `{target} = \{ {f32(4)}, {f32(8)}, {f32(12)}, {f32(0)} }`)
-    emit(out, 'p += 16')
+    emit(out, 'cursor += 16')
   elseif kind == 'mat3' then
-    emit(out, `{target} = G.mat3(b, p)`)
-    emit(out, 'p += 36')
+    emit(out, `{target} = Stream.mat3(bytes, cursor)`)
+    emit(out, 'cursor += 36')
   elseif kind == 'sphere' then
     emit(
       out,
       `{target} = \{ center = vector.create({f32(0)}, {f32(4)}, {f32(8)}), radius = {f32(12)} }`
     )
-    emit(out, 'p += 16')
+    emit(out, 'cursor += 16')
   elseif isLink(kind) then
-    emit(out, `{target} = buffer.readi32(b, p)`)
-    emit(out, 'p += 4')
-    emit(out, `if {target} < -1 then G.invalidLink({target}) end`)
+    emit(out, `{target} = buffer.readi32(bytes, cursor)`)
+    emit(out, 'cursor += 4')
+    emit(out, `if {target} < -1 then Stream.invalidLink({target}) end`)
   elseif isLinks(kind) then
     open(out, 'do')
-    emit(out, 'local count = buffer.readu32(b, p)')
-    emit(out, 'p += 4')
-    emit(out, `{target} = G.links(s, p, count)`)
-    emit(out, 'p += count * 4')
+    emit(out, 'local count = buffer.readu32(bytes, cursor)')
+    emit(out, 'cursor += 4')
+    emit(out, `{target} = Stream.links(stream, cursor, count)`)
+    emit(out, 'cursor += count * 4')
     close(out)
   elseif isStruct(kind) then
     local inline, size = inlineStruct(kind)
     if inline then
       emit(out, `{target} = {inline}`)
-      emit(out, `p += {size}`)
+      emit(out, `cursor += {size}`)
     else
-      emit(out, `{target}, p = R.{kind}(s, p)`)
+      emit(out, `{target}, cursor = ReadStruct.{kind}(stream, cursor)`)
     end
   elseif isCustom(kind) then
     local name, args = customCall(kind)
-    emit(out, `{target}, p = C.{name}(s, p{args})`)
+    emit(out, `{target}, cursor = Custom.{name}(stream, cursor{args})`)
   else
     error(`no reader for kind {kind}`)
   end
@@ -471,45 +525,53 @@ end
 
 --- Reads `count` elements of `kind` into `target`.
 local function readArray(out: Out, target: string, kind: string, count: string, checked: boolean)
-  -- Views are most of a mesh, so they're made here, without `checkSize` and `G.view` as calls:
-  -- the bounds check covers both, and `G.viewFail` tells them apart for the message.
+  -- Views are most of a mesh, so they're made here, without `checkSize` and `Stream.view` as
+  -- calls: the bounds check covers both, and `Stream.viewFail` tells them apart for the message.
   local view = Views[kind]
   if view then
     local size = Sizes[kind]
-    open(out, `if p + {count} * {size} > s.n then`)
-    emit(out, `G.viewFail(s, p, {count}, '{view}', {size}, {checked})`)
-    close(out)
+    local fail = `Stream.viewFail(stream, cursor, {count}, '{view}', {size}, {checked})`
+    local made = `\{ buffer = bytes, offset = cursor, count = {count}, stride = {size} }`
+    emit(out, `if cursor + {count} * {size} > stream.length then {fail} end`)
     emit(
       out,
-      `{target} = if {count} == 0 then Empties.{view} else setmetatable(\{ buffer = b, offset = p, count = {count}, stride = {size} }, Metas.{view})`
+      `{target} = if {count} == 0 then Empties.{view} else setmetatable({made}, Metas.{view})`
     )
-    emit(out, `p += {count} * {size}`)
+    emit(out, `cursor += {count} * {size}`)
     return
   end
 
-  if checked and minSize(kind) > 0 then emit(out, `G.checkSize(s, {count} * {minSize(kind)})`) end
+  if checked and minSize(kind) > 0 then
+    emit(out, `Stream.checkSize(stream, {count} * {minSize(kind)})`)
+  end
 
   -- Fixed-size structs are read when an element is asked for, not here (`nif/gamebryo/rows.luau`).
   if isStruct(kind) then
     local inline, size = inlineStruct(kind)
     if inline then
-      emit(out, `{target}, p = G.rows(s, p, {count}, {size}, W.{kind})`)
+      emit(
+        out,
+        `{target}, cursor = Stream.rows(stream, cursor, {count}, {size}, StructRow.{kind})`
+      )
       return
     end
 
     if versionFixed(kind) then
-      emit(out, `{target}, p = G.structRows(s, p, {count}, R.{kind})`)
+      emit(
+        out,
+        `{target}, cursor = Stream.structRows(stream, cursor, {count}, ReadStruct.{kind})`
+      )
       return
     end
   end
 
-  -- Not `list`, which a field may be called.
+  -- `elements`, not `list`, which a field may be called.
   open(out, 'do')
-  emit(out, `local __list = table.create({count})`)
-  open(out, `for i = 1, {count} do`)
-  readInto(out, '__list[i]', kind)
+  emit(out, `local elements = table.create({count})`)
+  open(out, `for index = 1, {count} do`)
+  readInto(out, 'elements[index]', kind)
   close(out)
-  emit(out, `{target} = __list`)
+  emit(out, `{target} = elements`)
   close(out)
 end
 
@@ -525,8 +587,8 @@ local function readStep(out: Out, step: Step)
   if step.list then
     open(out, 'do')
     local reader = if step.list == 'u16' then 'readu16' else 'readu32'
-    emit(out, `local count = buffer.{reader}(b, p)`)
-    emit(out, `p += {if step.list == 'u16' then 2 else 4}`)
+    emit(out, `local count = buffer.{reader}(bytes, cursor)`)
+    emit(out, `cursor += {if step.list == 'u16' then 2 else 4}`)
     readArray(out, name, kind, 'count', true)
     close(out)
   elseif step.count then
@@ -561,24 +623,24 @@ local function flatten(definition: Definition, classes: boolean): { Step }
   end
 
   local steps, bare = {}, 0
-  for i = #chain, 1, -1 do
-    for _, step in chain[i].first or {} do
+  for level = #chain, 1, -1 do
+    for _, step in chain[level].first or {} do
       table.insert(steps, step)
     end
 
-    if chain[i].bare and bare == 0 then bare = i end
+    if chain[level].bare and bare == 0 then bare = level end
   end
 
-  for i, link in chain do
-    local condition = conditions[names[i]]
+  for level, link in chain do
+    local condition = conditions[names[level]]
     for _, step in link.fields do
       if condition then
-        assert(not step.ret and not step.check, `{names[i]}'s fields can't be conditional`)
+        assert(not step.stop and not step.check, `{names[level]}'s fields can't be conditional`)
         step = table.clone(step)
         step.when = if step.when then `({condition}) and ({step.when})` else condition
       end
 
-      if i < bare then
+      if level < bare then
         local unread = table.clone(step)
         unread.unread = true
         table.insert(steps, unread)
@@ -602,12 +664,24 @@ local function declare(out: Out, steps: { Step }): { string }
     if name then uses[name] = (uses[name] or 0) + 1 end
   end
 
+  local empties: { string } = {}
+  local function flush()
+    if #empties == 0 then return end
+
+    emit(out, `local {table.concat(empties, ', ')} = {string.rep('{}, ', #empties - 1)}\{}`)
+    table.clear(empties)
+  end
+
   local stopped = false
   for _, step in steps do
-    if step.ret then stopped = true end
+    if step.stop then stopped = true end
 
     local name = step[1]
     if not name or seen[name] or string.find(name, '.', 1, true) then continue end
+
+    if Reserved[name] then
+      error(`the field {name} has a name the readers keep for themselves`, 0)
+    end
 
     seen[name] = true
     -- A default is built only when the field isn't read: a field every read assigns needs none,
@@ -616,10 +690,21 @@ local function declare(out: Out, steps: { Step }): { string }
     local otherwise = not stopped and step.when ~= nil and not step.unread and uses[name] == 1
     if otherwise then ElseDefault[step] = true end
 
-    emit(out, if always or otherwise then `local {name}` else `local {name} = {default(step)}`)
+    local value = if always or otherwise then nil else default(step)
+
+    -- Empty tables declared next to each other share a statement, as the style has them.
+    if value ~= '{}' then flush() end
+
+    if value == '{}' then
+      table.insert(empties, name)
+    else
+      emit(out, if value then `local {name} = {value}` else `local {name}`)
+    end
+
     if string.sub(name, 1, 1) ~= '_' then table.insert(stored, name) end
   end
 
+  flush()
   return stored
 end
 
@@ -628,14 +713,17 @@ local function emitSteps(out: Out, steps: { Step })
   for _, step in steps do
     if step.unread then continue end
 
-    if step.ret then
-      open(out, `if not ({expand(step.ret)}) then`)
+    if step.stop then
+      open(out, `if not ({expand(step.stop)}) then`)
       depth += 1
       continue
     end
 
     if step.check then
-      emit(out, `if not ({expand(step.check)}) then G.fail(\`{step.message}\`) end`)
+      -- A message that names nothing is a plain string.
+      local message = step.message :: string
+      local quoted = if string.find(message, '{', 1, true) then `\`{message}\`` else `'{message}'`
+      emit(out, `if not ({expand(step.check)}) then Stream.fail({quoted}) end`)
       continue
     end
 
@@ -646,14 +734,13 @@ local function emitSteps(out: Out, steps: { Step })
       local length = if type(step.skip) == 'number'
         then tostring(step.skip)
         else expand(step.skip :: string)
-      emit(out, `p = G.skip(s, p, {length})`)
+      emit(out, `cursor = Stream.skip(stream, cursor, {length})`)
     else
       readStep(out, step)
     end
 
     if when and ElseDefault[step] then
       close(out, 'else')
-      out.depth += 1
       emit(out, `{step[1]} = {default(step)}`)
     end
 
@@ -665,6 +752,10 @@ local function emitSteps(out: Out, steps: { Step })
   end
 end
 
+--- What every reader starts with: the stream's bytes and versions, in locals.
+local Versions = 'local bytes, version, userVersion, bethVersion = '
+  .. 'stream.bytes, stream.version, stream.userVersion, stream.bethVersion'
+
 local function emitReader(
   out: Out,
   header: string,
@@ -674,19 +765,18 @@ local function emitReader(
 )
   local steps = flatten(definition, classes)
   open(out, header)
-  emit(out, 'local b, V, UV, BV = s.b, s.version, s.userVersion, s.bethVersion')
-  if typeName then emit(out, 'local RN = s.recordName') end
+  emit(out, Versions)
+  if typeName then emit(out, 'local recordName = stream.recordName') end
 
   local stored = declare(out, steps)
   emitSteps(out, steps)
-  local parts = if typeName then { 'type = RN' } else {}
+  local parts = if typeName then { 'type = recordName' } else {}
   for _, name in stored do
     table.insert(parts, `{name} = {name}`)
   end
 
-  -- A paragraph of its own: the formatter breaks a long constructor over several lines.
-  table.insert(out.lines, '')
-  emit(out, `return \{ {table.concat(parts, ', ')} }, p`)
+  emit(out, '')
+  emit(out, `return \{ {table.concat(parts, ', ')} }, cursor`)
   close(out)
 end
 
@@ -700,7 +790,9 @@ local function emitCheck(out: Out, definition: Definition)
     base = Schema.classes[base].base
   end
 
-  open(out, 'local function check(r: any, records: { any }, classes: { string }, index: number)')
+  local header =
+    'local function check(record: any, records: { any }, classes: { string }, index: number)'
+  local body: Out = { lines = {}, depth = out.depth + 1 }
   local seen, anyLinks = {}, {}
   for _, step in steps do
     local name, kind = step[1], step[2]
@@ -712,73 +804,90 @@ local function emitCheck(out: Out, definition: Definition)
       table.insert(anyLinks, name)
     elseif isLink(kind) and (step.count or step.list or step.fixed) then
       -- Most lists and links are empty or -1: those cost a test, not a call.
-      open(out, `if #r.{name} > 0 then`)
-      emit(out, `L.links(r.{name}, '{string.sub(kind, 6)}', records, classes, index)`)
-      close(out)
+      open(body, `if #record.{name} > 0 then`)
+      emit(body, `Links.links(record.{name}, '{string.sub(kind, 6)}', records, classes, index)`)
+      close(body)
     elseif isLink(kind) then
-      open(out, `if r.{name} >= 0 then`)
-      emit(out, `L.link(r.{name}, '{string.sub(kind, 6)}', records, classes, index)`)
-      close(out)
+      open(body, `if record.{name} >= 0 then`)
+      emit(body, `Links.link(record.{name}, '{string.sub(kind, 6)}', records, classes, index)`)
+      close(body)
     elseif isLinks(kind) then
-      open(out, `if #r.{name} > 0 then`)
-      emit(out, `L.links(r.{name}, '{string.sub(kind, 7)}', records, classes, index)`)
-      close(out)
+      open(body, `if #record.{name} > 0 then`)
+      emit(body, `Links.links(record.{name}, '{string.sub(kind, 7)}', records, classes, index)`)
+      close(body)
     end
   end
 
   for _, name in anyLinks do
-    emit(out, `L.any(r.{name}, records)`)
+    emit(body, `Links.any(record.{name}, records)`)
   end
 
   for _, link in chain do
     for _, post in link.post or {} do
-      emit(out, `C.{post}(r, records, classes, index)`)
+      emit(body, `Custom.{post}(record, records, classes, index)`)
     end
   end
 
+  -- A class with nothing to check has a function with nothing in it, on one line.
+  if #body.lines == 0 then
+    emit(out, `{header} end`)
+    return
+  end
+
+  open(out, header)
+  table.move(body.lines, 1, #body.lines, #out.lines + 1, out.lines)
+  out.opened = false
   close(out)
 end
 
 local Header = {
   '--!nonstrict',
   '-- SPDX-License-Identifier: MIT OR Apache-2.0',
-  '-- @generated by generator/gamebryo.luau from generator/gamebryo_schema.luau. Do not edit.',
+  '-- @generated by generators/gamebryo.luau from generators/gamebryo_schema.luau. Do not edit.',
   '',
 }
 
-local function moduleText(body: { string }, prefix: string, extra: { string }?): string
+--- A module: the header, the requires and locals `body` uses, in one order everywhere, and the
+--- body. `own` is the structs module itself, whose tables are its own and come first, since its
+--- other locals name them.
+local function moduleText(body: { string }, prefix: string, own: boolean?): string
   local text = table.concat(body, '\n')
   local out = table.clone(Header)
   local function uses(name: string): boolean
     return string.find(text, `%f[%w_]{name}%f[^%w_]`) ~= nil
   end
 
-  if uses 'G' or uses 'Empties' then table.insert(out, `local G = require '{prefix}stream'`) end
-
-  if uses 'C' then table.insert(out, `local C = require '{prefix}custom'`) end
-
-  if uses 'R' or uses 'D' or uses 'W' then
-    table.insert(out, `local Structs = require '{prefix}structs'`)
+  if own then
+    table.insert(out, 'local read, default, rows, shared = {}, {}, {}, {}')
+    table.insert(out, '')
   end
 
-  if uses 'L' then table.insert(out, `local L = require '{prefix}links'`) end
+  local views = uses 'Empties' and uses 'Metas'
+  if views then table.insert(out, `local Array = require '{prefix}../array'`) end
 
-  if uses 'Empties' and uses 'Metas' then
-    table.insert(out, `local Array = require '{prefix}../array'`)
+  if uses 'Custom' then table.insert(out, `local Custom = require '{prefix}custom'`) end
+
+  if uses 'Stream' or uses 'Empties' then
+    table.insert(out, `local Stream = require '{prefix}stream'`)
+  end
+
+  if uses 'Links' then table.insert(out, `local Links = require '{prefix}links'`) end
+
+  local structs = uses 'ReadStruct' or uses 'DefaultStruct' or uses 'StructRow'
+  if structs and not own then table.insert(out, `local Structs = require '{prefix}structs'`) end
+
+  if views then
     table.insert(out, 'local Empties, Metas = Array.empty, Array.metas')
   elseif uses 'Empties' then
     table.insert(out, `local Empties = require('{prefix}../array').empty`)
   end
 
-  if uses 'R' then table.insert(out, 'local R = Structs.read') end
+  local from = if own then '' else 'Structs.'
+  if uses 'ReadStruct' then table.insert(out, `local ReadStruct = {from}read`) end
 
-  if uses 'D' then table.insert(out, 'local D = Structs.default') end
+  if uses 'DefaultStruct' then table.insert(out, `local DefaultStruct = {from}default`) end
 
-  if uses 'W' then table.insert(out, 'local W = Structs.rows') end
-
-  for _, line in extra or {} do
-    table.insert(out, line)
-  end
+  if uses 'StructRow' then table.insert(out, `local StructRow = {from}rows`) end
 
   table.insert(out, '')
   table.move(body, 1, #body, #out + 1, out)
@@ -797,20 +906,18 @@ end
 
 local function structsModule(): string
   local out: Out = { lines = {}, depth = 0 }
-  emit(out, 'local read, default, rows, shared = {}, {}, {}, {}')
   for _, name in sorted(Schema.structs) do
     local definition = Schema.structs[name]
     emit(out, '')
     emitReader(
       out,
-      `function read.{name}(s: G.Stream, p: number): (any, number)`,
+      `function read.{name}(stream: Stream.Stream, cursor: number): (any, number)`,
       definition,
       false,
       false
     )
     emit(out, '')
-    local parts = {}
-    local seen = {}
+    local parts, seen = {}, {}
     for _, step in flatten(definition, false) do
       local field = step[1]
       if
@@ -838,21 +945,15 @@ local function structsModule(): string
     local inline = inlineStruct(name)
     if inline then
       emit(out, '')
-      emit(out, `function rows.{name}(b: buffer, p: number): any return {inline} end`)
+      oneLine(out, `function rows.{name}(bytes: buffer, cursor: number): any`, `return {inline}`)
     end
   end
 
   emit(out, '')
   emit(out, 'return { read = read, default = default, rows = rows }')
+
   -- A struct reads other structs through `read`, defined above, not a require of itself.
-  local text = moduleText(out.lines, './')
-  text = string.gsub(text, 'local Structs = require \'./structs\'\n', '')
-  text = string.gsub(text, 'local R = Structs.read\n', 'local R = read\n')
-  text = string.gsub(text, 'local D = Structs.default\n', 'local D = default\n')
-  text = string.gsub(text, 'local W = Structs.rows\n', 'local W = rows\n')
-  text = string.gsub(text, '\nlocal read, default, rows, shared = {}, {}, {}, {}\n', '\n')
-  text = string.gsub(text, '(\n\n)', '\nlocal read, default, rows, shared = {}, {}, {}, {}\n%1', 1)
-  return text
+  return moduleText(out.lines, './', true)
 end
 
 local function recordModule(class: string): string
@@ -860,7 +961,7 @@ local function recordModule(class: string): string
   local out: Out = { lines = {}, depth = 0 }
   emitReader(
     out,
-    'local function read(s: G.Stream, p: number): (any, number)',
+    'local function read(stream: Stream.Stream, cursor: number): (any, number)',
     definition,
     true,
     true
@@ -890,47 +991,46 @@ for _, class in sorted(concrete) do
 end
 
 local load = table.clone(Header)
-table.insert(
-  load,
-  '--- Each record class\'s codec, required the first time a record of it is read.'
-)
-table.insert(load, 'local Codecs = setmetatable({}, {')
-table.insert(load, '  __index = function(codecs, class)')
-table.insert(load, '    local codec = Requires[class]')
-table.insert(load, '    if not codec then return nil end')
-table.insert(load, '')
-table.insert(load, '    local loaded = codec()')
-table.insert(load, '    rawset(codecs, class, loaded)')
-table.insert(load, '    return loaded')
-table.insert(load, '  end,')
-table.insert(load, '})')
-table.insert(load, '')
-local requires = { 'Requires = {' }
+table.insert(load, 'local Requires = {')
 for _, class in sorted(concrete) do
-  if Schema.classes[class] then
-    local line = `  {class} = function() return require('./records/{class}') end,`
-    if #line <= 100 then
-      table.insert(requires, line)
-    else
-      -- Too long for one line: the formatter breaks it, so it is a paragraph of its own.
-      if requires[#requires] ~= '' then table.insert(requires, '') end
+  if not Schema.classes[class] then continue end
 
-      table.insert(requires, `  {class} = function()`)
-      table.insert(requires, `    return require('./records/{class}')`)
-      table.insert(requires, '  end,')
-      table.insert(requires, '')
-    end
+  local line = `  {class} = function() return require './records/{class}' end,`
+  if #line <= Layout.Width then
+    table.insert(load, line)
+    continue
   end
+
+  -- Too long for one line, so it is a paragraph of its own.
+  if load[#load] ~= '' then table.insert(load, '') end
+
+  table.insert(load, `  {class} = function()`)
+  table.insert(load, `    return require './records/{class}'`)
+  table.insert(load, '  end,')
+  table.insert(load, '')
 end
 
-table.insert(requires, '}')
-table.insert(load, 4, 'local Requires')
-table.insert(load, 5, '')
-for i, line in requires do
-  table.insert(load, 5 + i, line)
+for _, line in
+  {
+    '}',
+    '',
+    '--- Each record class\'s codec, required the first time a record of it is read.',
+    'local Codecs = setmetatable({}, {',
+    '  __index = function(codecs, class)',
+    '    local codec = Requires[class]',
+    '    if not codec then return nil end',
+    '',
+    '    local loaded = codec()',
+    '    rawset(codecs, class, loaded)',
+    '    return loaded',
+    '  end,',
+    '})',
+    '',
+    'return Codecs',
+  }
+do
+  table.insert(load, line)
 end
 
-table.insert(load, '')
-table.insert(load, 'return Codecs')
 jess.fs.write(jess.fs.join(outDir, 'load.luau'), table.concat(load, '\n') .. '\n')
 print(`wrote structs, load, and {written} record classes; {#missing} classes have no schema yet`)

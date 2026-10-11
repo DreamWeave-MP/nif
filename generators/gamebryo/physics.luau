@@ -105,7 +105,7 @@ struct('bhkRigidBodyCInfo', {
   { skip = 4 },
   { '_row3', 'vec3' },
   { skip = 4 },
-  { 'inertiaTensor', expr = '{ _row1, _row2, _row3 }', default = 'G.identity()' },
+  { 'inertiaTensor', expr = '{ _row1, _row2, _row3 }', default = 'Stream.identity()' },
   { 'center', 'vec4' },
   { 'mass', 'f32' },
   { 'linearDamping', 'f32' },
@@ -190,8 +190,8 @@ struct('bhkRagdollConstraintCInfoData', {
 local function pair(data: string): { Step }
   return {
     -- Copies of the shared default, since the steps after these assign into them.
-    { 'dataA', expr = `table.clone(D.{data}())`, default = `D.{data}()` },
-    { 'dataB', expr = `table.clone(D.{data}())`, default = `D.{data}()` },
+    { 'dataA', expr = `table.clone(DefaultStruct.{data}())`, default = `DefaultStruct.{data}()` },
+    { 'dataB', expr = `table.clone(DefaultStruct.{data}())`, default = `DefaultStruct.{data}()` },
   }
 end
 

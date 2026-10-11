@@ -3,26 +3,29 @@
 
 -- OpenMW's `components/nif/particle.hpp` values the schema can't state as steps.
 
-local G = require '../stream'
+local Stream = require '../stream'
 
-type Stream = G.Stream
+type Stream = Stream.Stream
 
 local custom = {}
 
 --- `NiPSysEmitterCtlrData`'s visibility keys, read by `readKeyMapPair<float, bool>`: a count,
 --- then a time and a byte per key, with no interpolation type whatever the version.
-function custom.emitterVisKeys(s: Stream, p: number): (any, number)
-  local b = s.b
-  local count = buffer.readu32(b, p)
-  p += 4
-  G.checkSize(s, count * 5)
+function custom.emitterVisKeys(stream: Stream, cursor: number): (any, number)
+  local bytes = stream.bytes
+  local count = buffer.readu32(bytes, cursor)
+  cursor += 4
+  Stream.checkSize(stream, count * 5)
   local keys = table.create(count) :: { { time: number, value: boolean } }
-  for i = 1, count do
-    keys[i] = { time = buffer.readf32(b, p), value = buffer.readu8(b, p + 4) ~= 0 }
-    p += 5
+  for index = 1, count do
+    keys[index] = {
+      time = buffer.readf32(bytes, cursor),
+      value = buffer.readu8(bytes, cursor + 4) ~= 0,
+    }
+    cursor += 5
   end
 
-  return { frameName = '', legacyWeight = 0, interpolationType = 0, keys = keys }, p
+  return { frameName = '', legacyWeight = 0, interpolationType = 0, keys = keys }, cursor
 end
 
 return custom

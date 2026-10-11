@@ -6,7 +6,8 @@ Turns `schema.luau` into the codec modules under `nif/`: `scan.luau`, `structs.l
 module per record type in `records/`, `load.luau` to require those on first use, `enums.luau`,
 and `types.luau`:
 
-  jess run generators/generate.luau src/internal
+  jess run --capability filesystem.read --capability filesystem.write \
+    generators/generate.luau src/internal
 
 For every record and struct there are four straight-line functions: `scan` walks past its fields
 collecting the links, `read` decodes them into one table, `write` encodes a table, and `links`
@@ -14,8 +15,14 @@ collects the links of a decoded one. A record's read, write, and links cover its
 too, so runs of fixed-size fields are read and written at constant offsets from one position and
 native code checks their bounds once. Only the scanners load with the package; a record type's
 module compiles the first time one is decoded.
+
+What is written is the committed source as it stands, in the repository's Luau style: nothing
+formats it afterwards. The generated code reads `bytes` at `cursor`, writes through `writer`
+(whose buffer, position, and length it keeps in `bytes`, `cursor`, and `capacity`), and collects
+links into `links`, `linkCount` of them so far.
 ]]
 
+local Layout = require './layout'
 local Schema = require './schema'
 
 type Field = Schema.Field
@@ -23,6 +30,23 @@ type Definition = Schema.Definition
 
 local outDir = ...
 if not outDir then error('usage: generate.luau <output folder>', 0) end
+
+--- The names the generated functions give their own values. A field is read into a local of its
+--- own name, so no field of a record or of a struct read by a function may have one of these.
+local Reserved: { [string]: boolean } = {
+  bytes = true,
+  cursor = true,
+  capacity = true,
+  writer = true,
+  record = true,
+  struct = true,
+  links = true,
+  linkCount = true,
+  map = true,
+  into = true,
+  typeName = true,
+  index = true,
+}
 
 local Sizes: { [string]: number } = {
   u8 = 1,
@@ -99,19 +123,19 @@ do
 end
 
 local function at(offset: number): string
-  if offset == 0 then return 'p' end
+  if offset == 0 then return 'cursor' end
 
-  return `p + {offset}`
+  return `cursor + {offset}`
 end
 
-local function f32(offset: number): string return `buffer.readf32(b, {at(offset)})` end
+local function f32(offset: number): string return `buffer.readf32(bytes, {at(offset)})` end
 
 local function vec3(offset: number): string
   return `vector.create({f32(offset)}, {f32(offset + 4)}, {f32(offset + 8)})`
 end
 
---- The expression reading one `kind` element at `offset` past `p`. `inList` keeps a null link as
---- -1, so lists stay dense.
+--- The expression reading one `kind` element at `offset` past `cursor`. `inList` keeps a null link
+--- as -1, so lists stay dense.
 local function readElement(kind: string, offset: number, inList: boolean?): string
   if Inline[kind] then
     local parts, position = {}, offset
@@ -121,8 +145,8 @@ local function readElement(kind: string, offset: number, inList: boolean?): stri
       local value = readElement(fieldKind, position)
       if field.fixed then
         local elements = {}
-        for i = 0, field.fixed - 1 do
-          table.insert(elements, readElement(fieldKind, position + i * each))
+        for index = 0, field.fixed - 1 do
+          table.insert(elements, readElement(fieldKind, position + index * each))
         end
 
         value = `\{ {table.concat(elements, ', ')} }`
@@ -136,21 +160,21 @@ local function readElement(kind: string, offset: number, inList: boolean?): stri
   end
 
   local scalar = Scalars[kind]
-  if kind == 'bool8' then return `buffer.readu8(b, {at(offset)}) ~= 0` end
+  if kind == 'bool8' then return `buffer.readu8(bytes, {at(offset)}) ~= 0` end
 
-  if scalar then return `buffer.read{scalar}(b, {at(offset)})` end
+  if scalar then return `buffer.read{scalar}(bytes, {at(offset)})` end
 
   if string.sub(kind, 1, 5) == 'enum:' then
     -- Read twice rather than call: the second load shares the first's bounds check.
-    local read = `buffer.readi32(b, {at(offset)})`
+    local read = `buffer.readi32(bytes, {at(offset)})`
     return `Names.{string.sub(kind, 6)}[{read}] or {read}`
   end
 
   if kind == 'link' then
-    if inList then return `buffer.readi32(b, {at(offset)})` end
+    if inList then return `buffer.readi32(bytes, {at(offset)})` end
 
     -- Raw: the record's constructor turns a negative index into nil.
-    return `buffer.readi32(b, {at(offset)})`
+    return `buffer.readi32(bytes, {at(offset)})`
   end
 
   if kind == 'vec2' then return `vector.create({f32(offset)}, {f32(offset + 4)}, 0)` end
@@ -165,27 +189,37 @@ local function readElement(kind: string, offset: number, inList: boolean?): stri
     return `\{ {f32(offset + 4)}, {f32(offset + 8)}, {f32(offset + 12)}, {f32(offset)} }`
   end
 
-  if kind == 'mat3' then return `C.readMat3(b, {at(offset)})` end
+  if kind == 'mat3' then return `Custom.readMat3(bytes, {at(offset)})` end
 
   if kind == 'tri' then
-    local u = function(k: number) return `buffer.readu16(b, {at(offset + k)})` end
-    return `vector.create({u(0)}, {u(2)}, {u(4)})`
+    local function u16(extra: number): string
+      return `buffer.readu16(bytes, {at(offset + extra)})`
+    end
+
+    return `vector.create({u16(0)}, {u16(2)}, {u16(4)})`
   end
 
   if kind == 'u16f32' then
-    return `vector.create(buffer.readu16(b, {at(offset)}), buffer.readf32(b, {at(offset + 2)}), 0)`
+    local index, weight = `buffer.readu16(bytes, {at(offset)})`, f32(offset + 2)
+    return `vector.create({index}, {weight}, 0)`
   end
 
   if kind == 'f32x2' then return `\{ {f32(offset)}, {f32(offset + 4)} }` end
 
   if kind == 'u32x3' then
-    local u = function(k: number) return `buffer.readu32(b, {at(offset + k)})` end
-    return `\{ {u(0)}, {u(4)}, {u(8)} }`
+    local function u32(extra: number): string
+      return `buffer.readu32(bytes, {at(offset + extra)})`
+    end
+
+    return `\{ {u32(0)}, {u32(4)}, {u32(8)} }`
   end
 
   if kind == 'u8x4' then
-    local u = function(k: number) return `buffer.readu8(b, {at(offset + k)})` end
-    return `\{ {u(0)}, {u(1)}, {u(2)}, {u(3)} }`
+    local function u8(extra: number): string
+      return `buffer.readu8(bytes, {at(offset + extra)})`
+    end
+
+    return `\{ {u8(0)}, {u8(1)}, {u8(2)}, {u8(3)} }`
   end
 
   error(`no element reader for {kind}`)
@@ -216,10 +250,10 @@ local function nanCheck(kind: string, value: string): string?
     table.insert(tests, `{part} ~= {part}`)
   end
 
-  return `if {table.concat(tests, ' or ')} then w.nan = true end`
+  return `if {table.concat(tests, ' or ')} then writer.nan = true end`
 end
 
---- The statements writing `value` as one `kind` element at `offset` past `p`.
+--- The statements writing `value` as one `kind` element at `offset` past `cursor`.
 local function writeElement(kind: string, value: string, offset: number): { string }
   if Inline[kind] then
     local lines, position = {}, offset
@@ -229,9 +263,9 @@ local function writeElement(kind: string, value: string, offset: number): { stri
       local part = value .. string.upper(string.sub(field[1], 1, 1)) .. string.sub(field[1], 2)
       local annotation = if fieldKind == 'vec3' then ': vector' else ''
       table.insert(lines, `local {part}{annotation} = {value}.{field[1]}`)
-      for i = 0, (field.fixed or 1) - 1 do
-        local element = if field.fixed then `{part}[{i + 1}]` else part
-        for _, line in writeElement(fieldKind, element, position + i * each) do
+      for index = 0, (field.fixed or 1) - 1 do
+        local element = if field.fixed then `{part}[{index + 1}]` else part
+        for _, line in writeElement(fieldKind, element, position + index * each) do
           table.insert(lines, line)
         end
 
@@ -246,27 +280,27 @@ local function writeElement(kind: string, value: string, offset: number): { stri
   end
 
   local scalar = Scalars[kind]
-  if kind == 'bool8' then return { `buffer.writeu8(b, {at(offset)}, if {value} then 1 else 0)` } end
+  if kind == 'bool8' then
+    return { `buffer.writeu8(bytes, {at(offset)}, if {value} then 1 else 0)` }
+  end
 
-  if scalar then return { `buffer.write{scalar}(b, {at(offset)}, {value})` } end
+  if scalar then return { `buffer.write{scalar}(bytes, {at(offset)}, {value})` } end
 
   if string.sub(kind, 1, 5) == 'enum:' then
     -- A known name is one lookup; a number, or an unknown name to report, takes the call.
     local values = `Values.{string.sub(kind, 6)}`
-    return {
-      `buffer.writei32(b, {at(offset)}, {values}[{value}] or C.enumValue({values}, {value}))`,
-    }
+    local number = `{values}[{value}] or Custom.enumValue({values}, {value})`
+    return { `buffer.writei32(bytes, {at(offset)}, {number})` }
   end
 
   if kind == 'link' then
-    return {
-      `buffer.writei32(b, {at(offset)}, if {value} and {value} >= 0 then map[{value}] or -1 else -1)`,
-    }
+    local saved = `if {value} and {value} >= 0 then map[{value}] or -1 else -1`
+    return { `buffer.writei32(bytes, {at(offset)}, {saved})` }
   end
 
   local lines = {}
-  local function put(write: string, k: number, part: string)
-    table.insert(lines, `buffer.write{write}(b, {at(offset + k)}, {part})`)
+  local function put(write: string, extra: number, part: string)
+    table.insert(lines, `buffer.write{write}(bytes, {at(offset + extra)}, {part})`)
   end
 
   if kind == 'vec2' then
@@ -274,20 +308,20 @@ local function writeElement(kind: string, value: string, offset: number): { stri
     put('f32', 4, `{value}.y`)
   elseif kind == 'vec3' then
     -- `value` is a local annotated `vector`, so native code lowers this to three stores.
-    table.insert(lines, `{value}:writef32x3(b, {at(offset)})`)
+    table.insert(lines, `{value}:writef32x3(bytes, {at(offset)})`)
   elseif kind == 'vec4' or kind == 'mat2' then
-    for i = 1, 4 do
-      put('f32', (i - 1) * 4, `{value}[{i}]`)
+    for index = 1, 4 do
+      put('f32', (index - 1) * 4, `{value}[{index}]`)
     end
   elseif kind == 'quat' then
     put('f32', 0, `{value}[4]`)
-    for i = 1, 3 do
-      put('f32', i * 4, `{value}[{i}]`)
+    for index = 1, 3 do
+      put('f32', index * 4, `{value}[{index}]`)
     end
   elseif kind == 'mat3' then
     for row = 1, 3 do
       table.insert(lines, `local {value}{row}: vector = {value}[{row}]`)
-      table.insert(lines, `{value}{row}:writef32x3(b, {at(offset + (row - 1) * 12)})`)
+      table.insert(lines, `{value}{row}:writef32x3(bytes, {at(offset + (row - 1) * 12)})`)
     end
   elseif kind == 'tri' then
     put('u16', 0, `{value}.x`)
@@ -300,12 +334,12 @@ local function writeElement(kind: string, value: string, offset: number): { stri
     put('f32', 0, `{value}[1]`)
     put('f32', 4, `{value}[2]`)
   elseif kind == 'u32x3' then
-    for i = 1, 3 do
-      put('u32', (i - 1) * 4, `{value}[{i}]`)
+    for index = 1, 3 do
+      put('u32', (index - 1) * 4, `{value}[{index}]`)
     end
   elseif kind == 'u8x4' then
-    for i = 1, 4 do
-      put('u8', i - 1, `{value}[{i}]`)
+    for index = 1, 4 do
+      put('u8', index - 1, `{value}[{index}]`)
     end
   else
     error(`no element writer for {kind}`)
@@ -314,40 +348,53 @@ local function writeElement(kind: string, value: string, offset: number): { stri
   return lines
 end
 
---- Source text with indentation. Every block gets a blank line before and after it, which
---- the structural style asks for between compound statements, whatever StyLua later folds.
-type Out = { lines: { string }, depth: number, pending: boolean }
+--- Source text with indentation. A block, and a statement too long for one line, gets a blank line
+--- before and after it: the room the style gives compound statements.
+type Out = {
+  lines: { string },
+  depth: number,
+  --- A block just closed: the next line gets a blank line before it.
+  pending: boolean,
+  --- A block just opened: its first line follows the opening with no blank line.
+  opened: boolean?,
+}
 
 local function blank(out: Out)
   local last = out.lines[#out.lines]
   if last and last ~= '' then table.insert(out.lines, '') end
 end
 
-local function opener(line: string?): boolean
-  if not line then return true end
-
-  local code = string.gsub(line, '^%s+', '')
-  return string.sub(code, -4) == 'then'
-    or string.sub(code, -2) == 'do'
-    or string.sub(code, -1) == '{'
-    or string.sub(code, 1, 9) == 'function '
-    or string.sub(code, 1, 15) == 'local function '
-    or code == 'else'
-end
-
+--- One statement, broken over several lines when it doesn't fit on one (`layout.luau`).
 local function emit(out: Out, line: string)
+  if line == '' then
+    out.pending = false
+    blank(out)
+    return
+  end
+
+  local wrapped = Layout.wrap(line, out.depth)
+
+  if #wrapped > 1 then
+    if not out.opened then blank(out) end
+
+    table.move(wrapped, 1, #wrapped, #out.lines + 1, out.lines)
+    out.pending, out.opened = true, false
+    return
+  end
+
   if out.pending then
     out.pending = false
     blank(out)
   end
 
-  table.insert(out.lines, if line == '' then '' else string.rep('  ', out.depth) .. line)
+  table.insert(out.lines, wrapped[1])
+  out.opened = false
 end
 
---- A statement StyLua may wrap over several lines, set apart like a block.
+--- A statement set apart like a block, whatever its length.
 local function spaced(out: Out, line: string)
   out.pending = false
-  if not opener(out.lines[#out.lines]) then blank(out) end
+  if not out.opened then blank(out) end
 
   emit(out, line)
   out.pending = true
@@ -355,23 +402,39 @@ end
 
 local function open(out: Out, line: string)
   out.pending = false
-  if not opener(out.lines[#out.lines]) then blank(out) end
+  if not out.opened then blank(out) end
 
-  emit(out, line)
+  local wrapped = Layout.wrap(line, out.depth)
+  table.move(wrapped, 1, #wrapped, #out.lines + 1, out.lines)
   out.depth += 1
+  out.opened = true
 end
 
 --- Switches the open `if` block to its `else` branch.
 local function otherwise(out: Out)
   out.pending = false
   table.insert(out.lines, string.rep('  ', out.depth - 1) .. 'else')
+  out.opened = true
 end
 
 local function close(out: Out, line: string?)
   out.depth -= 1
-  out.pending = false
   table.insert(out.lines, string.rep('  ', out.depth) .. (line or 'end'))
-  out.pending = true
+  out.pending, out.opened = true, false
+end
+
+--- A function that is one statement: on its header's line when it fits there.
+local function oneLine(out: Out, header: string, statement: string)
+  local whole = `{header} {statement} end`
+
+  if out.depth * 2 + #whole <= Layout.Width then
+    spaced(out, whole)
+    return
+  end
+
+  open(out, header)
+  emit(out, statement)
+  close(out)
 end
 
 local function isStruct(kind: string): boolean return Schema.Structs[kind] ~= nil end
@@ -423,8 +486,8 @@ end
 --- its condition, value, or arguments.
 local function referenced(name: string, fields: { Field }, from: number): boolean
   local pattern = `%f[%w_]{name}%f[^%w_]`
-  for i = from, #fields do
-    local field = fields[i]
+  for index = from, #fields do
+    local field = fields[index]
     local sources = { field.count, field.scanCount, field.when, field.expr, field.args }
     for _, source in sources do
       if string.find(source, pattern) then return true end
@@ -452,6 +515,15 @@ local function hasLinks(definition: Definition, seen: { [string]: boolean }?): b
 end
 
 -- Reading.
+
+--- Refuses a field the generated functions would mistake for one of their own values.
+local function checkNames(owner: string, fields: { Field })
+  for _, field in fields do
+    if Reserved[field[1]] then
+      error(`{owner}'s field {field[1]} has a name the generated code keeps for itself`, 0)
+    end
+  end
+end
 
 --- A record's fields and its bases', root first; a struct's own.
 local function flatten(definition: Definition): { Field }
@@ -488,11 +560,11 @@ local function emitRead(out: Out, fields: { Field }, typed: boolean, fill: boole
   local function flush()
     if offset == 0 then return end
 
-    emit(out, `p += {offset}`)
+    emit(out, `cursor += {offset}`)
     offset = 0
   end
 
-  for index, field in fields do
+  for _, field in fields do
     local name, kind = field[1], field[2]
     local size = fixedSize(field)
     if field.expr then
@@ -502,8 +574,8 @@ local function emitRead(out: Out, fields: { Field }, typed: boolean, fill: boole
       if field.fixed then
         local parts = {}
         local each = sizeOf(kind) :: number
-        for i = 0, field.fixed - 1 do
-          table.insert(parts, readElement(kind, offset + i * each))
+        for index = 0, field.fixed - 1 do
+          table.insert(parts, readElement(kind, offset + index * each))
         end
 
         value = `\{ {table.concat(parts, ', ')} }`
@@ -514,17 +586,17 @@ local function emitRead(out: Out, fields: { Field }, typed: boolean, fill: boole
       if kind == 'mat3' and not field.fixed then
         -- Exactly identity's bits read as the shared, frozen identity: most rotations are.
         local tests = {}
-        for i = 0, 8 do
-          local bits = if i % 4 == 0 then '0x3f800000' else '0'
-          table.insert(tests, `buffer.readu32(b, {at(offset + i * 4)}) == {bits}`)
+        for index = 0, 8 do
+          local bits = if index % 4 == 0 then '0x3f800000' else '0'
+          table.insert(tests, `buffer.readu32(bytes, {at(offset + index * 4)}) == {bits}`)
         end
 
         emit(out, `local {name} = Identity`)
         open(out, `if not ({table.concat(tests, ' and ')}) then`)
         local rows = {}
         for row = 0, 2 do
-          local o = offset + row * 12
-          table.insert(rows, `vector.create({f32(o)}, {f32(o + 4)}, {f32(o + 8)})`)
+          local start = offset + row * 12
+          table.insert(rows, `vector.create({f32(start)}, {f32(start + 4)}, {f32(start + 8)})`)
         end
 
         if fill then
@@ -553,17 +625,17 @@ local function emitRead(out: Out, fields: { Field }, typed: boolean, fill: boole
         for _, part in Schema.Structs[kind].fields do
           local partKind = part[2] :: string
           local each = sizeOf(partKind) :: number
-          local value = readElement(partKind, position)
+          local partValue = readElement(partKind, position)
           if part.fixed then
             local elements = {}
-            for i = 0, part.fixed - 1 do
-              table.insert(elements, readElement(partKind, position + i * each))
+            for index = 0, part.fixed - 1 do
+              table.insert(elements, readElement(partKind, position + index * each))
             end
 
-            value = `\{ {table.concat(elements, ', ')} }`
+            partValue = `\{ {table.concat(elements, ', ')} }`
           end
 
-          emit(out, `{name}.{part[1]} = {value}`)
+          emit(out, `{name}.{part[1]} = {partValue}`)
           position += each * (part.fixed or 1)
         end
 
@@ -590,30 +662,32 @@ local function emitRead(out: Out, fields: { Field }, typed: boolean, fill: boole
       if kind == 'string' then
         -- Interned whole (`nif/text.luau`): cut at the first NUL, as OpenMW reads names, and
         -- decoded, once per spelling.
-        emit(out, `local {name}Length = buffer.readu32(b, p)`)
-        emit(out, `local {name}Token = Spellings:intern(b, p + 4, {name}Length)`)
+        emit(out, `local {name}Length = buffer.readu32(bytes, cursor)`)
+        emit(out, `local {name}Token = Spellings:intern(bytes, cursor + 4, {name}Length)`)
         emit(out, `{target} = Strings[{name}Token]`)
         open(out, `if not {target} then`)
-        emit(out, `{target} = Text.cut(b, p + 4, {name}Length)`)
+        emit(out, `{target} = Text.cut(bytes, cursor + 4, {name}Length)`)
         emit(out, `Strings[{name}Token] = {target}`)
         close(out)
-        emit(out, `p += 4 + {name}Length`)
+        emit(out, `cursor += 4 + {name}Length`)
       elseif isCustom(kind) then
         local args = if field.args then `, {field.args}` else ''
-        emit(out, `{target}, p = C.{customName(kind)}.read(b, p{args})`)
+        emit(out, `{target}, cursor = Custom.{customName(kind)}.read(bytes, cursor{args})`)
       elseif isStruct(kind) and not (field.list or field.count) then
-        emit(out, `{target}, p = R.{kind}(b, p)`)
+        emit(out, `{target}, cursor = ReadStruct.{kind}(bytes, cursor)`)
       else
         if field.list then
-          emit(out, `local {name}Count = buffer.read{field.list}(b, p)`)
-          emit(out, `p += {Sizes[field.list]}`)
+          emit(out, `local {name}Count = buffer.read{field.list}(bytes, cursor)`)
+          emit(out, `cursor += {Sizes[field.list]}`)
         else
           emit(out, `local {name}Count = {field.count}`)
         end
 
         if isArray(field) then
           -- `open` walked these bytes, so they are in the buffer.
-          local arrayType = arrayKind(kind)
+          local arrayType, stride = arrayKind(kind), sizeOf(kind)
+          local view =
+            `\{ buffer = bytes, offset = cursor, count = {name}Count, stride = {stride} }`
           emit(out, `{target} = Empties.{arrayType}`)
           open(out, `if {name}Count > 0 then`)
           if fill then
@@ -623,29 +697,24 @@ local function emitRead(out: Out, fields: { Field }, typed: boolean, fill: boole
               out,
               `if reused and not reused.owned and getmetatable(reused) == Metas.{arrayType} then`
             )
-            emit(out, `reused.buffer, reused.offset, reused.count = b, p, {name}Count`)
+            emit(out, `reused.buffer, reused.offset, reused.count = bytes, cursor, {name}Count`)
             emit(out, `{target} = reused`)
             otherwise(out)
           end
 
-          spaced(
-            out,
-            `{target} = setmetatable(\{ buffer = b, offset = p, count = {name}Count, stride = {sizeOf(
-              kind
-            )} }, Metas.{arrayType})`
-          )
+          spaced(out, `{target} = setmetatable({view}, Metas.{arrayType})`)
           if fill then close(out) end
 
-          emit(out, `p += {name}Count * {sizeOf(kind)}`)
+          emit(out, `cursor += {name}Count * {sizeOf(kind)}`)
           close(out)
         else
           emit(out, `{target} = table.create({name}Count)`)
-          open(out, `for i = 1, {name}Count do`)
+          open(out, `for index = 1, {name}Count do`)
           if isStruct(kind) and not Inline[kind] then
-            emit(out, `{target}[i], p = R.{kind}(b, p)`)
+            emit(out, `{target}[index], cursor = ReadStruct.{kind}(bytes, cursor)`)
           else
-            emit(out, `{target}[i] = {readElement(kind, 0, true)}`)
-            emit(out, `p += {sizeOf(kind)}`)
+            emit(out, `{target}[index] = {readElement(kind, 0, true)}`)
+            emit(out, `cursor += {sizeOf(kind)}`)
           end
 
           close(out)
@@ -655,7 +724,7 @@ local function emitRead(out: Out, fields: { Field }, typed: boolean, fill: boole
       if field.when then close(out) end
     end
 
-    if field.stash then emit(out, `S.{field.stash} = {name}`) end
+    if field.stash then emit(out, `Stash.{field.stash} = {name}`) end
   end
 
   flush()
@@ -674,7 +743,7 @@ local function emitRead(out: Out, fields: { Field }, typed: boolean, fill: boole
       )
     end
 
-    emit(out, 'return p')
+    emit(out, 'return cursor')
     return
   end
 
@@ -690,7 +759,7 @@ local function emitRead(out: Out, fields: { Field }, typed: boolean, fill: boole
     )
   end
 
-  spaced(out, `return \{ {table.concat(parts, ', ')} }, p`)
+  spaced(out, `return \{ {table.concat(parts, ', ')} }, cursor`)
 end
 
 -- Scanning: the reader's walk, keeping only what later counts need and the links.
@@ -701,7 +770,7 @@ local function emitScan(out: Out, definition: Definition)
   local function flush()
     if offset == 0 then return end
 
-    emit(out, `p += {offset}`)
+    emit(out, `cursor += {offset}`)
     offset = 0
   end
 
@@ -716,14 +785,14 @@ local function emitScan(out: Out, definition: Definition)
 
       if kind == 'link' then
         local count = field.fixed or 1
-        for i = 0, count - 1 do
+        for element = 0, count - 1 do
           -- `scanLink`, inline: a link is listed when it isn't -1.
-          local position = at(offset + i * 4)
-          if i > 0 then blank(out) end
+          local position = at(offset + element * 4)
+          if element > 0 then blank(out) end
 
-          open(out, `if buffer.readi32(b, {position}) >= 0 then`)
-          emit(out, 'n += 1')
-          emit(out, `L[n] = buffer.readi32(b, {position})`)
+          open(out, `if buffer.readi32(bytes, {position}) >= 0 then`)
+          emit(out, 'linkCount += 1')
+          emit(out, `links[linkCount] = buffer.readi32(bytes, {position})`)
           close(out)
         end
       end
@@ -734,47 +803,49 @@ local function emitScan(out: Out, definition: Definition)
       if field.when then open(out, `if {field.when} then`) end
 
       if kind == 'string' then
-        emit(out, `p += 4 + buffer.readu32(b, p)`)
+        emit(out, 'cursor += 4 + buffer.readu32(bytes, cursor)')
       elseif isCustom(kind) then
         local args = if field.args then `, {field.args}` else ''
-        emit(out, `p, n = C.{customName(kind)}(b, p, L, n{args})`)
+        emit(
+          out,
+          `cursor, linkCount = Custom.{customName(kind)}(bytes, cursor, links, linkCount{args})`
+        )
       elseif isStruct(kind) and not (field.list or field.count) then
-        emit(out, `p, n = Sc.{kind}(b, p, L, n)`)
+        emit(out, `cursor, linkCount = Scanners.{kind}(bytes, cursor, links, linkCount)`)
       else
         local count
         if field.list then
-          emit(out, `local {name}Count = buffer.read{field.list}(b, p)`)
-          emit(out, `p += {Sizes[field.list]}`)
+          emit(out, `local {name}Count = buffer.read{field.list}(bytes, cursor)`)
+          emit(out, `cursor += {Sizes[field.list]}`)
           count = `{name}Count`
         else
           count = field.scanCount or field.count :: string
         end
 
-        if referenced(`{name}At`, fields, index + 1) then emit(out, `local {name}At = p`) end
+        if referenced(`{name}At`, fields, index + 1) then emit(out, `local {name}At = cursor`) end
 
         if kind == 'link' then
           open(out, `for _ = 1, {count} do`)
-          emit(out, 'local link = buffer.readi32(b, p)')
+          emit(out, 'local link = buffer.readi32(bytes, cursor)')
           open(out, 'if link >= 0 then')
-          emit(out, 'n += 1')
-          emit(out, 'L[n] = link')
+          emit(out, 'linkCount += 1')
+          emit(out, 'links[linkCount] = link')
           close(out)
-          emit(out, '')
-          emit(out, 'p += 4')
+          emit(out, 'cursor += 4')
           close(out)
         elseif isStruct(kind) and not Inline[kind] then
           open(out, `for _ = 1, {count} do`)
-          emit(out, `p, n = Sc.{kind}(b, p, L, n)`)
+          emit(out, `cursor, linkCount = Scanners.{kind}(bytes, cursor, links, linkCount)`)
           close(out)
         else
-          emit(out, `p += ({count}) * {sizeOf(kind)}`)
+          emit(out, `cursor += ({count}) * {sizeOf(kind)}`)
         end
       end
 
       if field.when then close(out) end
     end
 
-    if field.stash then emit(out, `S.{field.stash} = {name}`) end
+    if field.stash then emit(out, `Stash.{field.stash} = {name}`) end
   end
 
   flush()
@@ -782,41 +853,48 @@ end
 
 -- Writing: fixed fields in runs, one reservation per run.
 
---- A writer keeps the output's buffer, position, and length in locals `b`, `p`, and `n`, and hands
---- them back to `w` only around calls that write through it.
+--- A writer keeps the output's buffer, position, and length in the locals `bytes`, `cursor`, and
+--- `capacity`, and hands them back to `writer` only around calls that write through it.
+local Retake = 'bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity'
 
---- Makes room for `size` more bytes at `p`, calling out only when the buffer must grow.
-local function reserve(size: string): string
-  return `if p + {size} > n then w.p = p Writer.reserve(w, {size}) b, n = w.b, w.n end`
+--- Makes room for `size` more bytes at `cursor`, calling out only when the buffer must grow.
+local function emitReserve(out: Out, size: string)
+  open(out, `if cursor + {size} > capacity then`)
+  emit(out, 'writer.cursor = cursor')
+  emit(out, `Writer.reserve(writer, {size})`)
+  emit(out, 'bytes, capacity = writer.bytes, writer.capacity')
+  close(out)
 end
 
---- A call that writes through `w`, with the locals handed over and taken back.
+--- A call that writes through `writer`, with the locals handed over and taken back.
 local function emitCall(out: Out, call: string)
-  emit(out, 'w.p = p')
+  emit(out, 'writer.cursor = cursor')
   emit(out, call)
-  emit(out, 'b, p, n = w.b, w.p, w.n')
+  emit(out, Retake)
 end
 
-local function emitWriteRun(out: Out, run: { Field })
+--- `subject` is what the fields are written from: `record` in a record's writer, `struct` in a
+--- struct's.
+local function emitWriteRun(out: Out, run: { Field }, subject: string)
   local total = 0
   for _, field in run do
     total += fixedSize(field) :: number
   end
 
-  emit(out, reserve(tostring(total)))
+  emitReserve(out, tostring(total))
   local offset = 0
   for _, field in run do
     local name, kind = field[1], field[2]
-    local value = if isHidden(field) then field.save :: string else `r.{name}`
+    local value = if isHidden(field) then field.save :: string else `{subject}.{name}`
     if field.fixed then
       local each = sizeOf(kind) :: number
       emit(out, `local {name} = {value}`)
-      for i = 0, field.fixed - 1 do
-        for _, line in writeElement(kind, `{name}[{i + 1}]`, offset + i * each) do
+      for index = 0, field.fixed - 1 do
+        for _, line in writeElement(kind, `{name}[{index + 1}]`, offset + index * each) do
           emit(out, line)
         end
 
-        local check = nanCheck(kind, `{name}[{i + 1}]`)
+        local check = nanCheck(kind, `{name}[{index + 1}]`)
         if check then emit(out, check) end
       end
     else
@@ -841,69 +919,69 @@ local function emitWriteRun(out: Out, run: { Field })
     offset += fixedSize(field) :: number
   end
 
-  emit(out, `p += {total}`)
+  emit(out, `cursor += {total}`)
 end
 
-local function emitWriteField(out: Out, field: Field)
+local function emitWriteField(out: Out, field: Field, subject: string)
   local name, kind = field[1], field[2]
-  if field.when then open(out, `if r.{name} ~= nil then`) end
+  if field.when then open(out, `if {subject}.{name} ~= nil then`) end
 
   if kind == 'string' then
     open(out, 'do')
-    emit(out, `local text = Text.encode(r.{name})`)
+    emit(out, `local text = Text.encode({subject}.{name})`)
     emit(out, 'local length = #text')
-    emit(out, reserve '4 + length')
-    emit(out, 'buffer.writeu32(b, p, length)')
-    emit(out, 'buffer.writestring(b, p + 4, text)')
-    emit(out, 'p += 4 + length')
+    emitReserve(out, '4 + length')
+    emit(out, 'buffer.writeu32(bytes, cursor, length)')
+    emit(out, 'buffer.writestring(bytes, cursor + 4, text)')
+    emit(out, 'cursor += 4 + length')
     close(out)
   elseif isCustom(kind) then
-    emitCall(out, `C.{customName(kind)}.write(w, r.{name}, map)`)
+    emitCall(out, `Custom.{customName(kind)}.write(writer, {subject}.{name}, map)`)
   elseif isStruct(kind) and not (field.list or field.count) then
-    emitCall(out, `W.{kind}(w, r.{name}, map)`)
+    emitCall(out, `WriteStruct.{kind}(writer, {subject}.{name}, map)`)
   else
     open(out, 'do')
-    emit(out, `local values = r.{name}`)
+    emit(out, `local values = {subject}.{name}`)
     local count = if isArray(field) then 'values.count' else '#values'
     local each = sizeOf(kind)
     local prefix = if field.list then Sizes[field.list] else 0
     if isArray(field) and kind == 'link' then
-      emit(out, reserve(`{prefix} + {count} * 4`))
+      emitReserve(out, `{prefix} + {count} * 4`)
     elseif isArray(field) then
       emit(out, `local length = {count} * values.stride`)
-      emit(out, reserve(`{prefix} + length`))
+      emitReserve(out, `{prefix} + length`)
     elseif each then
-      emit(out, reserve(`{prefix} + {count} * {each}`))
+      emitReserve(out, `{prefix} + {count} * {each}`)
     elseif prefix > 0 then
-      emit(out, reserve(tostring(prefix)))
+      emitReserve(out, tostring(prefix))
     end
 
     if field.list then
-      emit(out, `buffer.write{field.list}(b, p, {count})`)
-      emit(out, `p += {prefix}`)
+      emit(out, `buffer.write{field.list}(bytes, cursor, {count})`)
+      emit(out, `cursor += {prefix}`)
     end
 
     if isArray(field) and kind == 'link' then
       emit(out, 'local source, offset = values.buffer, values.offset')
-      open(out, `for i = 0, {count} - 1 do`)
-      emit(out, 'local link = buffer.readi32(source, offset + i * 4)')
-      emit(out, 'buffer.writei32(b, p, if link >= 0 then map[link] or -1 else -1)')
-      emit(out, 'p += 4')
+      open(out, `for index = 0, {count} - 1 do`)
+      emit(out, 'local link = buffer.readi32(source, offset + index * 4)')
+      emit(out, 'buffer.writei32(bytes, cursor, if link >= 0 then map[link] or -1 else -1)')
+      emit(out, 'cursor += 4')
       close(out)
     elseif isArray(field) then
-      emit(out, 'buffer.copy(b, p, values.buffer, values.offset, length)')
-      emit(out, 'p += length')
+      emit(out, 'buffer.copy(bytes, cursor, values.buffer, values.offset, length)')
+      emit(out, 'cursor += length')
     elseif each then
       open(out, 'for _, value in values do')
       for _, line in writeElement(kind, 'value', 0) do
         emit(out, line)
       end
 
-      emit(out, `p += {each}`)
+      emit(out, `cursor += {each}`)
       close(out)
     else
       open(out, 'for _, value in values do')
-      emitCall(out, `W.{kind}(w, value, map)`)
+      emitCall(out, `WriteStruct.{kind}(writer, value, map)`)
       close(out)
     end
 
@@ -913,16 +991,18 @@ local function emitWriteField(out: Out, field: Field)
   if field.when then close(out) end
 end
 
-local function emitWrite(out: Out, definition: Definition)
+local function emitWrite(out: Out, definition: Definition, subject: string)
+  -- The body comes first, under a line that stands for the locals it turns out to read.
   local body: Out = { lines = {}, depth = out.depth, pending = false }
   local run: { Field } = {}
   local function flush()
     if #run == 0 then return end
 
-    emitWriteRun(body, run)
+    emitWriteRun(body, run, subject)
     run = {}
   end
 
+  emit(body, 'local')
   for _, field in definition.fields do
     if field.expr then continue end
 
@@ -934,69 +1014,67 @@ local function emitWrite(out: Out, definition: Definition)
     flush()
     if isHidden(field) then error(`hidden variable field {field[1]}`) end
 
-    emitWriteField(body, field)
+    emitWriteField(body, field, subject)
   end
 
   flush()
-  if #body.lines == 0 then return end
+  if #body.lines == 1 then return end
 
   -- Keep only the locals the body reads, so none is declared and never used.
   local text = table.concat(body.lines, '\n')
-  local names = { 'b', 'p', 'n' }
-  if not string.find(text, '%(b, ') then table.remove(names, 1) end
+  local names = { 'bytes', 'cursor', 'capacity' }
+  if not string.find(text, '%(%s*bytes,') then table.remove(names, 1) end
 
-  if not string.find(text, '> n then') then table.remove(names) end
+  if not string.find(text, '> capacity then') then table.remove(names) end
 
   local list = table.concat(names, ', ')
   local values = {}
   for _, name in names do
-    table.insert(values, `w.{name}`)
+    table.insert(values, `writer.{name}`)
   end
 
   local take = `{list} = {table.concat(values, ', ')}`
-  emit(out, `local {take}`)
+  body.lines[1] = `{string.rep('  ', out.depth)}local {take}`
   for _, line in body.lines do
-    if string.find(line, '^%s*b, p, n = w%.b, w%.p, w%.n$') then
-      line = string.gsub(line, 'b, p, n = w%.b, w%.p, w%.n', take)
-    end
-
-    table.insert(out.lines, line)
+    local indent, code = string.match(line, '^(%s*)(.*)$')
+    table.insert(out.lines, if code == Retake then indent .. take else line)
   end
 
-  emit(out, 'w.p = p')
+  out.pending, out.opened = body.pending, false
+  emit(out, 'writer.cursor = cursor')
 end
 
 -- Collecting the links of a decoded table.
 
-local function emitLinks(out: Out, definition: Definition)
+local function emitLinks(out: Out, definition: Definition, subject: string)
   for _, field in definition.fields do
     local name, kind = field[1], field[2]
     if isHidden(field) or not kind then continue end
 
     if kind == 'link' and not (field.list or field.count or field.fixed) then
-      emit(out, `local {name} = r.{name}`)
+      emit(out, `local {name} = {subject}.{name}`)
       open(out, `if {name} and {name} >= 0 then`)
-      emit(out, 'n += 1')
-      emit(out, `L[n] = {name}`)
+      emit(out, 'linkCount += 1')
+      emit(out, `links[linkCount] = {name}`)
       close(out)
     elseif kind == 'link' then
-      emit(out, `local {name} = r.{name}`)
-      open(out, `for i = 0, {name}.count - 1 do`)
-      emit(out, `local value = buffer.readi32({name}.buffer, {name}.offset + i * 4)`)
+      emit(out, `local {name} = {subject}.{name}`)
+      open(out, `for index = 0, {name}.count - 1 do`)
+      emit(out, `local value = buffer.readi32({name}.buffer, {name}.offset + index * 4)`)
       open(out, 'if value >= 0 then')
-      emit(out, 'n += 1')
-      emit(out, 'L[n] = value')
+      emit(out, 'linkCount += 1')
+      emit(out, 'links[linkCount] = value')
       close(out)
       close(out)
     elseif kind == 'custom:textureMaps' or kind == 'custom:textureSource' then
-      emit(out, `n = C.{customName(kind)}.links(r.{name}, L, n)`)
+      emit(out, `linkCount = Custom.{customName(kind)}.links({subject}.{name}, links, linkCount)`)
     elseif isStruct(kind) and hasLinks(Schema.Structs[kind]) then
       if field.list or field.count then
-        open(out, `for _, value in r.{name} do`)
-        emit(out, `n = Lk.{kind}(value, L, n)`)
+        open(out, `for _, value in {subject}.{name} do`)
+        emit(out, `linkCount = StructLinks.{kind}(value, links, linkCount)`)
         close(out)
       else
-        emit(out, `n = Lk.{kind}(r.{name}, L, n)`)
+        emit(out, `linkCount = StructLinks.{kind}({subject}.{name}, links, linkCount)`)
       end
     else
       continue
@@ -1008,20 +1086,39 @@ end
 
 -- The modules.
 
+--- A function: its header, what `body` emits, and `footer`, its last statement. With nothing in
+--- the body it is the footer alone, on the header's line when that fits.
 local function emitFunction(out: Out, header: string, body: () -> (), footer: string)
+  local start = #out.lines
   open(out, header)
   local before = #out.lines
   body()
-  if #out.lines > before and out.lines[#out.lines] ~= '' then blank(out) end
+
+  if #out.lines == before then
+    for _ = start + 1, before do
+      table.remove(out.lines)
+    end
+
+    out.depth -= 1
+    out.opened = false
+    oneLine(out, header, footer)
+    blank(out)
+    return
+  end
+
+  if out.lines[#out.lines] ~= '' then blank(out) end
 
   emit(out, footer)
   close(out)
   blank(out)
 end
 
+--- Lines as they are, but for a statement at the margin too long for one.
 local function lines(out: Out, list: { string })
   for _, line in list do
-    table.insert(out.lines, line)
+    for _, part in Layout.wrap(line, 0) do
+      table.insert(out.lines, part)
+    end
   end
 end
 
@@ -1035,7 +1132,8 @@ local function sortedKeys<T>(map: { [string]: T }): { string }
   return keys
 end
 
-local Generated = '-- Generated by generator/generate.luau from generator/schema.luau. Do not edit.'
+local Generated =
+  '-- Generated by generators/generate.luau from generators/schema.luau. Do not edit.'
 
 --- The scanners: what `open` runs over every record, and all it loads.
 local function scanModule(): string
@@ -1045,41 +1143,44 @@ local function scanModule(): string
     '-- SPDX-License-Identifier: MIT OR Apache-2.0',
     Generated,
     '',
-    'local C = require \'./custom_scan\'',
+    'local Custom = require \'./custom_scan\'',
     '',
     'type Links = { number }',
     'export type Scanner = (buffer, number, Links, number) -> (number, number)',
     '',
-    '--- Values a base record leaves for its derived records, which are scanned by another function.',
-    'local S: { [string]: number } = {}',
+    '--- Values a base record leaves for its derived records, which another function scans.',
+    'local Stash: { [string]: number } = {}',
     '',
     '--- Scanners by type name.',
-    'local Sc: { [string]: Scanner } = {}',
+    'local Scanners: { [string]: Scanner } = {}',
     '',
   })
 
-  local Bases: { [string]: Definition } = {}
+  local bases: { [string]: Definition } = {}
   for _, entry in Schema.Records do
-    Bases[entry.name] = entry.definition
+    bases[entry.name] = entry.definition
   end
+
+  local parameters = 'bytes: buffer, cursor: number, links: Links, linkCount: number'
 
   local function define(name: string, definition: Definition)
     local base = definition.base
     if base and #definition.fields == 0 then
-      emit(out, `Sc.{name} = Sc.{base}`)
+      emit(out, `Scanners.{name} = Scanners.{base}`)
       blank(out)
       return
     end
 
+    checkNames(name, definition.fields)
     emitFunction(
       out,
-      `function Sc.{name}(b: buffer, p: number, L: Links, n: number): (number, number)`,
+      `function Scanners.{name}({parameters}): (number, number)`,
       function()
         -- The base records' fields, inline from the root down: a scan is one call per record.
         local chain = {}
         local ancestor = base
         while ancestor do
-          local found = Bases[ancestor]
+          local found = bases[ancestor]
           table.insert(chain, 1, found)
           ancestor = found.base
         end
@@ -1090,7 +1191,7 @@ local function scanModule(): string
 
         emitScan(out, definition)
       end,
-      'return p, n'
+      'return cursor, linkCount'
     )
   end
 
@@ -1107,7 +1208,7 @@ local function scanModule(): string
   emit(out, '--- Every record type name, in the order the Rust `NiType` lists them.')
   emit(out, `local RecordNames = table.freeze \{ {table.concat(names, ', ')} }`)
   blank(out)
-  emit(out, 'return table.freeze { scan = Sc, names = RecordNames }')
+  emit(out, 'return table.freeze { scan = Scanners, names = RecordNames }')
   return table.concat(out.lines, '\n') .. '\n'
 end
 
@@ -1129,7 +1230,7 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
 
   local modules = {
     { 'Array', 'array' },
-    { 'C', 'custom' },
+    { 'Custom', 'custom' },
     { 'Enums', 'enums' },
     { 'Structs', 'structs' },
     { 'Text', 'text' },
@@ -1139,9 +1240,9 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
 
   local needs = {
     Array = uses 'Array' or uses 'Metas' or uses 'Empties',
-    C = uses 'C' or uses 'Identity',
+    Custom = uses 'Custom' or uses 'Identity',
     Enums = uses 'Names' or uses 'Values',
-    Structs = uses 'R' or uses 'W' or uses 'Lk' or uses 'S',
+    Structs = uses 'ReadStruct' or uses 'WriteStruct' or uses 'StructLinks' or uses 'Stash',
     Text = uses 'Spellings' or uses 'Text',
     Types = true,
     Writer = true,
@@ -1177,20 +1278,20 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
 
   if uses 'Metas' then table.insert(out, 'local Metas, Empties = Array.metas, Array.empty') end
 
-  if uses 'Identity' then table.insert(out, 'local Identity = C.identity') end
+  if uses 'Identity' then table.insert(out, 'local Identity = Custom.identity') end
 
   if uses 'Spellings' then
     table.insert(out, 'local Spellings: dream_intern_Pool = Text.pool')
     table.insert(out, 'local Strings = Text.decoded')
   end
 
-  if uses 'S' then
+  if uses 'Stash' then
     table.insert(
       out,
       '--- Values one field leaves for a later one, read by an expression; shared, since a'
     )
     table.insert(out, '--- struct reads what its record left.')
-    table.insert(out, 'local S = Structs.stash')
+    table.insert(out, 'local Stash = Structs.stash')
   end
 
   for _, line in locals or {} do
@@ -1208,79 +1309,94 @@ end
 --- The values records hold inside them, shared by the record modules.
 local function structsModule(): string
   local out: Out = { lines = {}, depth = 0, pending = false }
-  lines(out, { 'local R, W, Lk = {}, {}, {}', '' })
+  lines(out, { 'local ReadStruct, WriteStruct, StructLinks = {}, {}, {}', '' })
 
   for _, name in sortedKeys(Schema.Structs) do
     if Inline[name] then continue end
 
     local definition = Schema.Structs[name]
-    open(out, `function R.{name}(b: buffer, p: number): (Types.{name}, number)`)
+    checkNames(name, definition.fields)
+    open(out, `function ReadStruct.{name}(bytes: buffer, cursor: number): (Types.{name}, number)`)
     emitRead(out, definition.fields, false)
     close(out)
     blank(out)
     emitFunction(
       out,
-      `function W.{name}(w: Writer, r: Types.{name}, map: Map)`,
-      function() emitWrite(out, definition) end,
+      `function WriteStruct.{name}(writer: Writer, struct: Types.{name}, map: Map)`,
+      function() emitWrite(out, definition, 'struct') end,
       'return'
     )
     emitFunction(
       out,
-      `function Lk.{name}(r: Types.{name}, L: Links, n: number): number`,
-      function() emitLinks(out, definition) end,
-      'return n'
+      `function StructLinks.{name}(struct: Types.{name}, links: Links, linkCount: number): number`,
+      function() emitLinks(out, definition, 'struct') end,
+      'return linkCount'
     )
   end
 
-  emit(out, 'return table.freeze { read = R, write = W, links = Lk, stash = S }')
+  local exports = 'read = ReadStruct, write = WriteStruct, links = StructLinks, stash = Stash'
+  emit(out, `return table.freeze \{ {exports} }`)
   local body = out.lines
   -- The struct tables and the stash are this module's own, not `Structs`'.
   local text = codecModule(body, './')
-  text = string.gsub(text, 'local S = Structs.stash', 'local S = {}')
+  text = string.gsub(text, 'local Stash = Structs.stash', 'local Stash = {}')
   return (string.gsub(text, 'local Structs = require \'./structs\'\n', ''))
 end
 
 --- One record type's reader, writer, and link collector, each over its fields and its bases',
 --- loaded the first time a record of the type is decoded.
-local function recordModule(definition: Definition): string
+local function recordModule(name: string, definition: Definition): string
   local fields = flatten(definition)
   local flat: Definition = { fields = fields }
   local out: Out = { lines = {}, depth = 0, pending = false }
-  open(out, 'local function read(b: buffer, p: number, typeName: string): (Record, number)')
+  checkNames(name, fields)
+  open(
+    out,
+    'local function read(bytes: buffer, cursor: number, typeName: string): (Record, number)'
+  )
   emitRead(out, fields, true)
   close(out)
   blank(out)
-  open(out, 'local function fill(b: buffer, p: number, typeName: string, into: Record): number')
+  open(
+    out,
+    'local function fill(bytes: buffer, cursor: number, typeName: string, into: Record): number'
+  )
   emitRead(out, fields, true, true)
   close(out)
   blank(out)
   emitFunction(
     out,
-    'local function write(w: Writer, r: Record, map: Map)',
-    function() emitWrite(out, flat) end,
+    'local function write(writer: Writer, record: Record, map: Map)',
+    function() emitWrite(out, flat, 'record') end,
     'return'
   )
   emitFunction(
     out,
-    'local function links(r: Record, L: Links, n: number): number',
-    function() emitLinks(out, flat) end,
-    'return n'
+    'local function collectLinks(record: Record, links: Links, linkCount: number): number',
+    function() emitLinks(out, flat, 'record') end,
+    'return linkCount'
   )
-  emit(out, 'return table.freeze { read = read, fill = fill, write = write, links = links }')
+  emit(
+    out,
+    'return table.freeze { read = read, fill = fill, write = write, links = collectLinks }'
+  )
   local text = table.concat(out.lines, '\n')
-  local locals = {}
-  for _, name in { 'R', 'W', 'Lk' } do
-    if string.find(text, `%f[%w_]{name}%.`) then table.insert(locals, name) end
+  local sources = {
+    { 'ReadStruct', 'Structs.read' },
+    { 'WriteStruct', 'Structs.write' },
+    { 'StructLinks', 'Structs.links' },
+  }
+
+  local locals, values = {}, {}
+  for _, source in sources do
+    if string.find(text, `%f[%w_]{source[1]}%.`) then
+      table.insert(locals, source[1])
+      table.insert(values, source[2])
+    end
   end
 
   local declare = {}
   if #locals > 0 then
-    local sources = { R = 'Structs.read', W = 'Structs.write', Lk = 'Structs.links' }
-    local values = {}
-    for _, name in locals do
-      table.insert(values, sources[name])
-    end
-
     declare = { `local {table.concat(locals, ', ')} = {table.concat(values, ', ')}` }
   end
 
@@ -1316,10 +1432,10 @@ local function loadModule(): string
     '',
     '--- One record type\'s codec, from `records/`.',
     'export type Codec = {',
-    '  read read: (b: buffer, p: number, typeName: string) -> (Types.Record, number),',
-    '  read fill: (b: buffer, p: number, typeName: string, into: Types.Record) -> number,',
-    '  read write: (w: Writer.Writer, r: Types.Record, map: { [number]: number }) -> (),',
-    '  read links: (r: Types.Record, L: { number }, n: number) -> number,',
+    '  read read: (bytes: buffer, cursor: number, typeName: string) -> (Types.Record, number),',
+    '  read fill: (bytes: buffer, cursor: number, typeName: string, into: Types.Record) -> number,',
+    '  read write: (writer: Writer.Writer, record: Types.Record, map: { [number]: number }) -> (),',
+    '  read links: (record: Types.Record, links: { number }, linkCount: number) -> number,',
     '}',
     '',
     'local Load: { [string]: () -> Codec } = {}',
@@ -1328,9 +1444,10 @@ local function loadModule(): string
   for _, entry in Schema.Records do
     local module = moduleOf(entry.name)
     if module == entry.name then
-      spaced(
+      oneLine(
         out,
-        `Load.{entry.name} = function(): Codec return require('./records/{entry.name}') end`
+        `Load.{entry.name} = function(): Codec`,
+        `return require './records/{entry.name}'`
       )
     end
   end
@@ -1364,7 +1481,7 @@ local function enums(): string
     {
       '--!strict',
       '-- SPDX-License-Identifier: MIT OR Apache-2.0',
-      '-- Generated by generator/generate.luau from generator/schema.luau. Do not edit.',
+      Generated,
       '',
     }
 
@@ -1496,7 +1613,9 @@ export type TextureMap = {
 }
 
 --- The bump map's slot adds luma and a 2x2 displacement, column by column.
-export type BumpMap = TextureMap & { lumaScale: number, lumaOffset: number, displacement: { number } }
+export type BumpMap =
+  TextureMap
+  & { lumaScale: number, lumaOffset: number, displacement: { number } }
 
 --- A texturing property's maps by slot. `slots` is how many the file lists; a save lists at
 --- least that many, and enough for every map. A decal slot with no map is `false`.
@@ -1575,7 +1694,7 @@ local function types(): string
     {
       '--!strict',
       '-- SPDX-License-Identifier: MIT OR Apache-2.0',
-      '-- Generated by generator/generate.luau from generator/schema.luau. Do not edit.',
+      Generated,
       '',
       '--[[',
       'What a decoded Morrowind NIF record holds. A record type is its base type and its own fields;',
@@ -1647,8 +1766,22 @@ end
 type ArrayKind = Schema.ArrayKind
 type ArrayValue = Schema.ArrayValue
 
-local Groups =
-  table.freeze { x = true, y = true, z = true, w = true, r = true, g = true, b = true, a = true }
+--- The single letters a kind's values go by where they are a coordinate's or a color's parts, and
+--- what `set` calls each: the type's signature keeps the letter, which is how the format's
+--- documentation names it.
+local Groups: { [string]: string } = table.freeze {
+  ['x'] = 'xComponent',
+  ['y'] = 'yComponent',
+  ['z'] = 'zComponent',
+  ['w'] = 'wComponent',
+  ['r'] = 'red',
+  ['g'] = 'green',
+  ['b'] = 'blue',
+  ['a'] = 'alpha',
+}
+
+--- The name `set` takes a value by.
+local function parameter(value: ArrayValue): string return Groups[value.name] or value.name end
 
 --- A `toTable` element's type.
 local function elementType(kind: ArrayKind): string
@@ -1735,7 +1868,7 @@ end
 local function readValue(value: ArrayValue): string
   local parts = {}
   for _, component in value.components do
-    table.insert(parts, `buffer.read{component.encoding}(b, {at(component.offset)})`)
+    table.insert(parts, `buffer.read{component.encoding}(bytes, {at(component.offset)})`)
   end
 
   if value.type == 'number' then return parts[1] end
@@ -1747,10 +1880,10 @@ end
 
 local function writeValue(value: ArrayValue): { string }
   local written = {}
-  for i, component in value.components do
+  for index, component in value.components do
     local part = if value.type == 'number'
-      then value.name
-      else `{value.name}.{({ 'x', 'y', 'z' })[i]}`
+      then parameter(value)
+      else `{parameter(value)}.{({ 'x', 'y', 'z' })[index]}`
     table.insert(written, `buffer.write{component.encoding}(bytes, {at(component.offset)}, {part})`)
   end
 
@@ -1799,7 +1932,7 @@ local function arrayAccess(): string
     local returns, params, reads = {}, {}, {}
     for _, value in kind.values do
       table.insert(returns, value.type)
-      table.insert(params, `{value.name}: {value.type}`)
+      table.insert(params, `{parameter(value)}: {value.type}`)
       table.insert(reads, readValue(value))
     end
 
@@ -1808,12 +1941,12 @@ local function arrayAccess(): string
     emit(out, `kind = '{kind.kind}',`)
     close(out, '}')
     open(out, `function {name}.get(array: {typeName}, index: number): {result}`)
-    emit(out, 'local b, p = array.buffer, at(array, index)')
+    emit(out, 'local bytes, cursor = array.buffer, at(array, index)')
     spaced(out, `return {table.concat(reads, ', ')}`)
     close(out)
     open(out, `function {name}.set(array: {typeName}, index: number, {table.concat(params, ', ')})`)
     emit(out, 'own(array)')
-    emit(out, 'local bytes, p = array.buffer, at(array, index)')
+    emit(out, 'local bytes, cursor = array.buffer, at(array, index)')
     for _, value in kind.values do
       for _, line in writeValue(value) do
         emit(out, line)
@@ -1823,26 +1956,26 @@ local function arrayAccess(): string
     close(out)
     open(out, `function {name}.toTable(array: {typeName}): \{ {elementType(kind)} }`)
     emit(out, `local list = table.create(array.count) :: \{ {elementType(kind)} }`)
-    emit(out, 'local b = array.buffer')
-    open(out, 'for i = 1, array.count do')
-    emit(out, 'local p = array.offset + (i - 1) * array.stride')
+    emit(out, 'local bytes = array.buffer')
+    open(out, 'for index = 1, array.count do')
+    emit(out, 'local cursor = array.offset + (index - 1) * array.stride')
     if kind.shape == 'value' then
-      emit(out, `list[i] = {reads[1]}`)
+      emit(out, `list[index] = {reads[1]}`)
     elseif kind.shape == 'list' then
-      spaced(out, `list[i] = \{ {table.concat(reads, ', ')} }`)
+      spaced(out, `list[index] = \{ {table.concat(reads, ', ')} }`)
     else
       local parts, group = {}, {}
-      for i, value in kind.values do
+      for position, value in kind.values do
         if kind.shape == 'grouped' and Groups[value.name] then
-          table.insert(group, reads[i])
+          table.insert(group, reads[position])
         else
-          table.insert(parts, `{value.name} = {reads[i]}`)
+          table.insert(parts, `{value.name} = {reads[position]}`)
         end
       end
 
       if #group > 0 then table.insert(parts, 2, `value = \{ {table.concat(group, ', ')} }`) end
 
-      spaced(out, `list[i] = \{ {table.concat(parts, ', ')} }`)
+      spaced(out, `list[index] = \{ {table.concat(parts, ', ')} }`)
     end
 
     close(out)
@@ -1870,7 +2003,7 @@ for _, entry in Schema.Records do
 
   local file = `{entry.name}.luau`
   written[file] = true
-  jess.fs.write(jess.fs.join(recordsDir, file), recordModule(entry.definition))
+  jess.fs.write(jess.fs.join(recordsDir, file), recordModule(entry.name, entry.definition))
 end
 
 for _, file in jess.fs.list(recordsDir) do

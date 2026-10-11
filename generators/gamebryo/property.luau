@@ -19,7 +19,7 @@ struct('NiTextureTransform', {
 
 struct('NiTexturingPropertyTexture', {
   { 'enabled', 'bool' },
-  { ret = 'not enabled' },
+  { stop = 'not enabled' },
   { 'sourceTexture', 'link:NiSourceTexture', when = 'V >= @3.3.0.13' },
   { 'clamp', 'u32', when = 'V <= VER_OB' },
   { 'filter', 'u32', when = 'V <= VER_OB' },
@@ -38,7 +38,7 @@ struct('NiTexturingPropertyTexture', {
 class('NiTexturingProperty', 'NiProperty', {
   { 'flags', 'u16', when = 'V <= VER_OB_OLD or V >= @20.1.0.2' },
   { 'applyMode', 'u32', when = 'V <= @20.1.0.1', default = '2' },
-  { '_maps', 'custom:texturingMaps(R.NiTexturingPropertyTexture)' },
+  { '_maps', 'custom:texturingMaps(ReadStruct.NiTexturingPropertyTexture)' },
   { 'textures', expr = '_maps.textures', default = '{}' },
   { 'shaderTextures', expr = '_maps.shaderTextures', default = '{}' },
   { 'shaderIds', expr = '_maps.shaderIds', default = '{}' },
@@ -154,7 +154,7 @@ struct('BSSPTranslucencyParams', {
 })
 
 class('BSLightingShaderProperty', 'BSShaderProperty', {
-  { ret = 'name ~= \'\' and BV >= F76' },
+  { stop = 'name ~= \'\' and BV >= F76' },
   { 'textureSet', 'link:BSShaderTextureSet' },
   { 'emissive', 'vec3' },
   { 'emissiveMult', 'f32', default = '1' },
@@ -211,7 +211,7 @@ class('BSLightingShaderProperty', 'BSShaderProperty', {
 class('BSEffectShaderProperty', 'BSShaderProperty', {
   -- Its own `envMapScale` replaces the base's in the record, read or not.
   { 'envMapScale', expr = '0' },
-  { ret = 'name ~= \'\' and BV >= F76' },
+  { stop = 'name ~= \'\' and BV >= F76' },
   { 'sourceTexture', 'sstring' },
   { skip = 4, when = 'BV >= STF' },
   { '_packed', 'u32' },

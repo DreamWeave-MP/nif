@@ -4,9 +4,9 @@
 --[[
 The fields whose layout the schema can't say: keyframe unions, bounding volumes, texture maps
 and sources, sequence targets, shared normals, and UV sets. Each codec comes as `read`
-(`(b, p, ...) -> (value, p)`), `write` (`(w, value, map, ...)`), and, when it holds links,
-`links` (`(value, links, n) -> n`), the shapes the record modules have for the rest; their
-scanners are `custom_scan.luau`.
+(`(bytes, cursor, ...) -> (value, cursor)`), `write` (`(writer, value, map, ...)`), and, when it
+holds links, `links` (`(value, links, linkCount) -> linkCount`), the shapes the record modules
+have for the rest; their scanners are `custom_scan.luau`.
 ]]
 
 local Array = require './array'
@@ -39,41 +39,45 @@ end
 
 --- A u32 length and the bytes, cut at the first NUL the way OpenMW reads names. The whole field
 --- is interned (in native code), and cut and decoded once per spelling.
-local function readString(b: buffer, p: number): (string, number)
-  local length = buffer.readu32(b, p)
-  if length == 0 then return '', p + 4 end
+local function readString(bytes: buffer, cursor: number): (string, number)
+  local length = buffer.readu32(bytes, cursor)
+  if length == 0 then return '', cursor + 4 end
 
-  local token = Spellings:intern(b, p + 4, length)
+  local token = Spellings:intern(bytes, cursor + 4, length)
   local text = Strings[token]
   if not text then
-    text = Text.cut(b, p + 4, length)
+    text = Text.cut(bytes, cursor + 4, length)
     Strings[token] = text
   end
 
-  return text, p + 4 + length
+  return text, cursor + 4 + length
 end
 
-local function readLink(b: buffer, p: number): number?
-  local value = buffer.readi32(b, p)
+local function readLink(bytes: buffer, cursor: number): number?
+  local value = buffer.readi32(bytes, cursor)
   if value < 0 then return nil end
 
   return value
 end
 
-local function readVec3(b: buffer, p: number): vector
-  return vector.create(buffer.readf32(b, p), buffer.readf32(b, p + 4), buffer.readf32(b, p + 8))
+local function readVec3(bytes: buffer, cursor: number): vector
+  return vector.create(
+    buffer.readf32(bytes, cursor),
+    buffer.readf32(bytes, cursor + 4),
+    buffer.readf32(bytes, cursor + 8)
+  )
 end
 
 --- Writes a float, flagging the writer when it is NaN (see `restoreNans` in `init.luau`).
-local function writeF32(w: Writer, p: number, value: number)
-  buffer.writef32(w.b, p, value)
-  if value ~= value then w.nan = true end
+local function writeF32(writer: Writer, cursor: number, value: number)
+  buffer.writef32(writer.bytes, cursor, value)
+  if value ~= value then writer.nan = true end
 end
 
-local function writeVec3(w: Writer, p: number, value: vector)
-  writeF32(w, p, value.x)
-  writeF32(w, p + 4, value.y)
-  writeF32(w, p + 8, value.z)
+local function writeVec3(writer: Writer, cursor: number, value: vector)
+  writeF32(writer, cursor, value.x)
+  writeF32(writer, cursor + 4, value.y)
+  writeF32(writer, cursor + 8, value.z)
 end
 
 --- The identity rotation, shared by every record that stores exactly it (the record modules test
@@ -120,31 +124,31 @@ local function invalidKeyType(kind: number): never
 end
 
 --- Writes a key array: its count, its kind unless it is empty (or `always`), and its bytes.
-local function writeKeys(w: Writer, kind: number, keys: View, always: boolean?)
+local function writeKeys(writer: Writer, kind: number, keys: View, always: boolean?)
   local count = keys.count
-  Writer.reserve(w, 8)
-  buffer.writeu32(w.b, w.p, count)
+  Writer.reserve(writer, 8)
+  buffer.writeu32(writer.bytes, writer.cursor, count)
   if count == 0 and not always then
-    w.p += 4
+    writer.cursor += 4
     return
   end
 
-  buffer.writeu32(w.b, w.p + 4, kind)
-  w.p += 8
-  Array.write(w, keys)
+  buffer.writeu32(writer.bytes, writer.cursor + 4, kind)
+  writer.cursor += 8
+  Array.write(writer, keys)
 end
 
 type KeyCodec = {
-  read: (b: buffer, p: number) -> (KeyUnion, number),
-  write: (w: Writer, value: KeyUnion, map: Map) -> (),
+  read: (bytes: buffer, cursor: number) -> (KeyUnion, number),
+  write: (writer: Writer, value: KeyUnion, map: Map) -> (),
 }
 
 --- One key union's codec: `kinds` maps a key type to its array kind.
 local function keyUnion(kinds: { Array.Kind }, always: boolean?): KeyCodec
-  local function read(b: buffer, p: number): (KeyUnion, number)
-    local count = buffer.readu32(b, p)
-    local kind = if count == 0 and not always then 1 else buffer.readu32(b, p + 4)
-    local start = if always or count > 0 then p + 8 else p + 4
+  local function read(bytes: buffer, cursor: number): (KeyUnion, number)
+    local count = buffer.readu32(bytes, cursor)
+    local kind = if count == 0 and not always then 1 else buffer.readu32(bytes, cursor + 4)
+    local start = if always or count > 0 then cursor + 8 else cursor + 4
     local arrayKind = kinds[kind]
     if not arrayKind then
       if count == 0 then return { LinKey = Array.empty[kinds[1]] }, start end
@@ -152,13 +156,13 @@ local function keyUnion(kinds: { Array.Kind }, always: boolean?): KeyCodec
       invalidKeyType(kind)
     end
 
-    return unionOf(kind, Array.view(b, start, count, arrayKind)),
+    return unionOf(kind, Array.view(bytes, start, count, arrayKind)),
       start + count * Array.strides[arrayKind]
   end
 
-  local function write(w: Writer, value: KeyUnion, _map: Map)
+  local function write(writer: Writer, value: KeyUnion, _map: Map)
     local kind, keys = keysOf(value)
-    writeKeys(w, kind, keys, always)
+    writeKeys(writer, kind, keys, always)
   end
 
   return { read = read, write = write }
@@ -181,21 +185,24 @@ local colorKeys = keyUnion { 'colorLin' }
 local quaternionKeys = keyUnion { 'rotLin', 'rotLin', 'rotTcb' }
 local rotKeys = {}
 
-function rotKeys.read(b: buffer, p: number): (RotUnion, number)
-  if buffer.readu32(b, p) == 0 or buffer.readu32(b, p + 4) ~= 4 then
-    local keys, after = quaternionKeys.read(b, p)
+function rotKeys.read(bytes: buffer, cursor: number): (RotUnion, number)
+  if buffer.readu32(bytes, cursor) == 0 or buffer.readu32(bytes, cursor + 4) ~= 4 then
+    local keys, after = quaternionKeys.read(bytes, cursor)
     return { LinKey = keys.LinKey, BezKey = keys.BezKey, TCBKey = keys.TCBKey }, after
   end
 
-  local axisOrder = enumName(Names.AxisOrder, buffer.readi32(b, p + 8))
-  local x, y, z
-  x, p = floatKeys.read(b, p + 12)
-  y, p = floatKeys.read(b, p)
-  z, p = floatKeys.read(b, p)
+  local axisOrder = enumName(Names.AxisOrder, buffer.readi32(bytes, cursor + 8))
+  local xKeys, yKeys, zKeys
+  xKeys, cursor = floatKeys.read(bytes, cursor + 12)
+  yKeys, cursor = floatKeys.read(bytes, cursor)
+  zKeys, cursor = floatKeys.read(bytes, cursor)
   return {
-    EulerKey = { axisOrder = axisOrder, axes = { { keys = x }, { keys = y }, { keys = z } } },
+    EulerKey = {
+      axisOrder = axisOrder,
+      axes = { { keys = xKeys }, { keys = yKeys }, { keys = zKeys } },
+    },
   },
-    p
+    cursor
 end
 
 --- Euler keys save a count of one when any axis has keys, else none.
@@ -208,86 +215,90 @@ local function eulerCount(euler: Euler): number
   return 0
 end
 
-function rotKeys.write(w: Writer, value: RotUnion, map: Map)
+function rotKeys.write(writer: Writer, value: RotUnion, map: Map)
   local euler = value.EulerKey
   if not euler then
     local kind, keys = keysOf(value)
-    writeKeys(w, kind, keys)
+    writeKeys(writer, kind, keys)
     return
   end
 
   local count = eulerCount(euler)
-  Writer.reserve(w, 12)
-  buffer.writeu32(w.b, w.p, count)
+  Writer.reserve(writer, 12)
+  buffer.writeu32(writer.bytes, writer.cursor, count)
   if count == 0 then
-    w.p += 4
+    writer.cursor += 4
     return
   end
 
-  buffer.writeu32(w.b, w.p + 4, 4)
-  buffer.writei32(w.b, w.p + 8, enumValue(Values.AxisOrder, euler.axisOrder))
-  w.p += 12
+  buffer.writeu32(writer.bytes, writer.cursor + 4, 4)
+  buffer.writei32(writer.bytes, writer.cursor + 8, enumValue(Values.AxisOrder, euler.axisOrder))
+  writer.cursor += 12
   for _, axis in euler.axes do
-    floatKeys.write(w, axis.keys, map)
+    floatKeys.write(writer, axis.keys, map)
   end
 end
 
 -- Bounding volumes: a sphere, an oriented box, or a union of volumes.
 local boundingVolume = {}
 
-function boundingVolume.read(b: buffer, p: number): (Types.BoundingVolume, number)
-  local kind = buffer.readi32(b, p)
-  p += 4
+function boundingVolume.read(bytes: buffer, cursor: number): (Types.BoundingVolume, number)
+  local kind = buffer.readi32(bytes, cursor)
+  cursor += 4
   if kind == 0 then
-    local bound = { center = readVec3(b, p), radius = buffer.readf32(b, p + 12) }
-    return { boundData = { NiSphereBV = { bound = bound } } }, p + 16
+    local bound = { center = readVec3(bytes, cursor), radius = buffer.readf32(bytes, cursor + 12) }
+    return { boundData = { NiSphereBV = { bound = bound } } }, cursor + 16
   elseif kind == 1 then
     local box = {
-      center = readVec3(b, p),
-      axis = { readVec3(b, p + 12), readVec3(b, p + 24), readVec3(b, p + 36) },
-      extents = readVec3(b, p + 48),
+      center = readVec3(bytes, cursor),
+      axis = {
+        readVec3(bytes, cursor + 12),
+        readVec3(bytes, cursor + 24),
+        readVec3(bytes, cursor + 36),
+      },
+      extents = readVec3(bytes, cursor + 48),
     }
-    return { boundData = { NiBoxBV = box } }, p + 60
+    return { boundData = { NiBoxBV = box } }, cursor + 60
   elseif kind == 4 then
-    local count = buffer.readu32(b, p)
-    p += 4
+    local count = buffer.readu32(bytes, cursor)
+    cursor += 4
     local volumes = table.create(count) :: { Types.BoundingVolume }
-    for i = 1, count do
-      volumes[i], p = boundingVolume.read(b, p)
+    for index = 1, count do
+      volumes[index], cursor = boundingVolume.read(bytes, cursor)
     end
 
-    return { boundData = { NiUnionBV = { boundingVolumes = volumes } } }, p
+    return { boundData = { NiUnionBV = { boundingVolumes = volumes } } }, cursor
   end
 
   error(`Invalid BoundType: {Names.BoundType[kind] or 'Sphere'}`, 0)
 end
 
-function boundingVolume.write(w: Writer, value: Types.BoundingVolume, map: Map)
+function boundingVolume.write(writer: Writer, value: Types.BoundingVolume, map: Map)
   local data = value.boundData
-  Writer.reserve(w, 64)
-  local b, p = w.b, w.p
+  Writer.reserve(writer, 64)
+  local bytes, cursor = writer.bytes, writer.cursor
   local sphere, box, union = data.NiSphereBV, data.NiBoxBV, data.NiUnionBV
   if sphere then
     local bound = sphere.bound
-    buffer.writei32(b, p, 0)
-    writeVec3(w, p + 4, bound.center)
-    writeF32(w, p + 16, bound.radius)
-    w.p = p + 20
+    buffer.writei32(bytes, cursor, 0)
+    writeVec3(writer, cursor + 4, bound.center)
+    writeF32(writer, cursor + 16, bound.radius)
+    writer.cursor = cursor + 20
   elseif box then
-    buffer.writei32(b, p, 1)
-    writeVec3(w, p + 4, box.center)
-    writeVec3(w, p + 16, box.axis[1])
-    writeVec3(w, p + 28, box.axis[2])
-    writeVec3(w, p + 40, box.axis[3])
-    writeVec3(w, p + 52, box.extents)
-    w.p = p + 64
+    buffer.writei32(bytes, cursor, 1)
+    writeVec3(writer, cursor + 4, box.center)
+    writeVec3(writer, cursor + 16, box.axis[1])
+    writeVec3(writer, cursor + 28, box.axis[2])
+    writeVec3(writer, cursor + 40, box.axis[3])
+    writeVec3(writer, cursor + 52, box.extents)
+    writer.cursor = cursor + 64
   elseif union then
     local volumes = union.boundingVolumes
-    buffer.writei32(b, p, 4)
-    buffer.writeu32(b, p + 4, #volumes)
-    w.p = p + 8
+    buffer.writei32(bytes, cursor, 4)
+    buffer.writeu32(bytes, cursor + 4, #volumes)
+    writer.cursor = cursor + 8
     for _, volume in volumes do
-      boundingVolume.write(w, volume, map)
+      boundingVolume.write(writer, volume, map)
     end
   end
 end
@@ -321,71 +332,71 @@ type TextureMaps = {
 }
 local BumpSlot = 5
 
-local function readMap(b: buffer, p: number, bump: boolean): (TextureMap, number)
+local function readMap(bytes: buffer, cursor: number, bump: boolean): (TextureMap, number)
   local map: TextureMap = {
-    texture = readLink(b, p),
-    clampMode = enumName(Names.ClampMode, buffer.readi32(b, p + 4)),
-    filterMode = enumName(Names.FilterMode, buffer.readi32(b, p + 8)),
-    textureIndex = buffer.readu32(b, p + 12),
-    ps2L = buffer.readi16(b, p + 16),
-    ps2K = buffer.readi16(b, p + 18),
-    unknownFlag1 = buffer.readu8(b, p + 20),
-    unknownFlag2 = buffer.readu8(b, p + 21),
+    texture = readLink(bytes, cursor),
+    clampMode = enumName(Names.ClampMode, buffer.readi32(bytes, cursor + 4)),
+    filterMode = enumName(Names.FilterMode, buffer.readi32(bytes, cursor + 8)),
+    textureIndex = buffer.readu32(bytes, cursor + 12),
+    ps2L = buffer.readi16(bytes, cursor + 16),
+    ps2K = buffer.readi16(bytes, cursor + 18),
+    unknownFlag1 = buffer.readu8(bytes, cursor + 20),
+    unknownFlag2 = buffer.readu8(bytes, cursor + 21),
   }
 
-  if not bump then return map, p + 22 end
+  if not bump then return map, cursor + 22 end
 
-  map.lumaScale = buffer.readf32(b, p + 22)
-  map.lumaOffset = buffer.readf32(b, p + 26)
+  map.lumaScale = buffer.readf32(bytes, cursor + 22)
+  map.lumaOffset = buffer.readf32(bytes, cursor + 26)
   map.displacement = {
-    buffer.readf32(b, p + 30),
-    buffer.readf32(b, p + 34),
-    buffer.readf32(b, p + 38),
-    buffer.readf32(b, p + 42),
+    buffer.readf32(bytes, cursor + 30),
+    buffer.readf32(bytes, cursor + 34),
+    buffer.readf32(bytes, cursor + 38),
+    buffer.readf32(bytes, cursor + 42),
   }
-  return map, p + 46
+  return map, cursor + 46
 end
 
-local function writeMap(w: Writer, map: TextureMap, links: Map, bump: boolean)
-  Writer.reserve(w, 50)
-  local b, p = w.b, w.p
-  buffer.writeu32(b, p, 1)
-  buffer.writei32(b, p + 4, Writer.link(map.texture, links))
-  buffer.writei32(b, p + 8, enumValue(Values.ClampMode, map.clampMode or 'WrapSWrapT'))
-  buffer.writei32(b, p + 12, enumValue(Values.FilterMode, map.filterMode or 'Trilerp'))
-  buffer.writeu32(b, p + 16, map.textureIndex or 0)
-  buffer.writei16(b, p + 20, map.ps2L or 0)
-  buffer.writei16(b, p + 22, map.ps2K or -75)
-  buffer.writeu8(b, p + 24, map.unknownFlag1 or 0)
-  buffer.writeu8(b, p + 25, map.unknownFlag2 or 0)
+local function writeMap(writer: Writer, map: TextureMap, links: Map, bump: boolean)
+  Writer.reserve(writer, 50)
+  local bytes, cursor = writer.bytes, writer.cursor
+  buffer.writeu32(bytes, cursor, 1)
+  buffer.writei32(bytes, cursor + 4, Writer.link(map.texture, links))
+  buffer.writei32(bytes, cursor + 8, enumValue(Values.ClampMode, map.clampMode or 'WrapSWrapT'))
+  buffer.writei32(bytes, cursor + 12, enumValue(Values.FilterMode, map.filterMode or 'Trilerp'))
+  buffer.writeu32(bytes, cursor + 16, map.textureIndex or 0)
+  buffer.writei16(bytes, cursor + 20, map.ps2L or 0)
+  buffer.writei16(bytes, cursor + 22, map.ps2K or -75)
+  buffer.writeu8(bytes, cursor + 24, map.unknownFlag1 or 0)
+  buffer.writeu8(bytes, cursor + 25, map.unknownFlag2 or 0)
   if not bump then
-    w.p = p + 26
+    writer.cursor = cursor + 26
     return
   end
 
   local displacement = map.displacement or { 1, 0, 0, 1 }
-  writeF32(w, p + 26, map.lumaScale or 0)
-  writeF32(w, p + 30, map.lumaOffset or 0)
-  writeF32(w, p + 34, displacement[1])
-  writeF32(w, p + 38, displacement[2])
-  writeF32(w, p + 42, displacement[3])
-  writeF32(w, p + 46, displacement[4])
-  w.p = p + 50
+  writeF32(writer, cursor + 26, map.lumaScale or 0)
+  writeF32(writer, cursor + 30, map.lumaOffset or 0)
+  writeF32(writer, cursor + 34, displacement[1])
+  writeF32(writer, cursor + 38, displacement[2])
+  writeF32(writer, cursor + 42, displacement[3])
+  writeF32(writer, cursor + 46, displacement[4])
+  writer.cursor = cursor + 50
 end
 
 local textureMaps = {}
 
-function textureMaps.read(b: buffer, p: number): (TextureMaps, number)
-  local count = buffer.readu32(b, p)
-  p += 4
+function textureMaps.read(bytes: buffer, cursor: number): (TextureMaps, number)
+  local count = buffer.readu32(bytes, cursor)
+  cursor += 4
   local maps: TextureMaps = { slots = count }
   local decals: { TextureMap | false } = {}
   for slot = 0, count - 1 do
-    local present = buffer.readu32(b, p) ~= 0
-    p += 4
+    local present = buffer.readu32(bytes, cursor) ~= 0
+    cursor += 4
     local map
     if present then
-      map, p = readMap(b, p, slot == BumpSlot)
+      map, cursor = readMap(bytes, cursor, slot == BumpSlot)
     end
 
     if slot == 0 then
@@ -411,7 +422,7 @@ function textureMaps.read(b: buffer, p: number): (TextureMaps, number)
 
   if #decals > 0 then maps.decals = decals end
 
-  return maps, p
+  return maps, cursor
 end
 
 --- The map in a slot: 0 to 4 by name, 5 the bump map, the decals after.
@@ -457,111 +468,115 @@ local function slotCount(maps: TextureMaps): number
   return math.max(maps.slots or 0, used)
 end
 
-function textureMaps.write(w: Writer, value: TextureMaps, map: Map)
+function textureMaps.write(writer: Writer, value: TextureMaps, map: Map)
   local count = slotCount(value)
-  Writer.reserve(w, 4)
-  buffer.writeu32(w.b, w.p, count)
-  w.p += 4
+  Writer.reserve(writer, 4)
+  buffer.writeu32(writer.bytes, writer.cursor, count)
+  writer.cursor += 4
   for slot = 0, count - 1 do
     local entry = slotMap(value, slot)
     if entry then
-      writeMap(w, entry, map, slot == BumpSlot)
+      writeMap(writer, entry, map, slot == BumpSlot)
     else
-      Writer.reserve(w, 4)
-      buffer.writeu32(w.b, w.p, 0)
-      w.p += 4
+      Writer.reserve(writer, 4)
+      buffer.writeu32(writer.bytes, writer.cursor, 0)
+      writer.cursor += 4
     end
   end
 end
 
-function textureMaps.links(value: TextureMaps, links: Links, n: number): number
+function textureMaps.links(value: TextureMaps, links: Links, linkCount: number): number
   for slot = 0, slotCount(value) - 1 do
     local entry = slotMap(value, slot)
     local texture = entry and entry.texture
     if texture then
-      n += 1
-      links[n] = texture
+      linkCount += 1
+      links[linkCount] = texture
     end
   end
 
-  return n
+  return linkCount
 end
 
 -- A texture's source: an external file name, or an internal NiPixelData link.
 local textureSource = {}
 
-function textureSource.read(b: buffer, p: number): (Types.TextureSource, number)
-  if buffer.readu8(b, p) ~= 0 then
+function textureSource.read(bytes: buffer, cursor: number): (Types.TextureSource, number)
+  if buffer.readu8(bytes, cursor) ~= 0 then
     local name
-    name, p = readString(b, p + 1)
-    return { external = name }, p
+    name, cursor = readString(bytes, cursor + 1)
+    return { external = name }, cursor
   end
 
-  if buffer.readu8(b, p + 1) ~= 0 then return { internal = readLink(b, p + 2) }, p + 6 end
+  if buffer.readu8(bytes, cursor + 1) ~= 0 then
+    return { internal = readLink(bytes, cursor + 2) }, cursor + 6
+  end
 
-  return {}, p + 2
+  return {}, cursor + 2
 end
 
-function textureSource.write(w: Writer, value: Types.TextureSource, map: Map)
-  Writer.reserve(w, 6)
+function textureSource.write(writer: Writer, value: Types.TextureSource, map: Map)
+  Writer.reserve(writer, 6)
   local external = value.external
   if external then
-    buffer.writeu8(w.b, w.p, 1)
-    w.p += 1
-    Writer.string(w, external)
+    buffer.writeu8(writer.bytes, writer.cursor, 1)
+    writer.cursor += 1
+    Writer.string(writer, external)
     return
   end
 
-  buffer.writeu8(w.b, w.p, 0)
+  buffer.writeu8(writer.bytes, writer.cursor, 0)
   local internal = value.internal
   if internal == nil then
-    buffer.writeu8(w.b, w.p + 1, 0)
-    w.p += 2
+    buffer.writeu8(writer.bytes, writer.cursor + 1, 0)
+    writer.cursor += 2
     return
   end
 
-  buffer.writeu8(w.b, w.p + 1, 1)
-  buffer.writei32(w.b, w.p + 2, Writer.link(internal, map))
-  w.p += 6
+  buffer.writeu8(writer.bytes, writer.cursor + 1, 1)
+  buffer.writei32(writer.bytes, writer.cursor + 2, Writer.link(internal, map))
+  writer.cursor += 6
 end
 
-function textureSource.links(value: Types.TextureSource, links: Links, n: number): number
+function textureSource.links(value: Types.TextureSource, links: Links, linkCount: number): number
   local internal = value.internal
-  if internal == nil then return n end
+  if internal == nil then return linkCount end
 
-  n += 1
-  links[n] = internal
-  return n
+  linkCount += 1
+  links[linkCount] = internal
+  return linkCount
 end
 
 -- A sequence's target: an external file name, or two numbers.
 local sequenceTarget = {}
 
-function sequenceTarget.read(b: buffer, p: number): (Types.SequenceTarget, number)
-  if buffer.readu8(b, p) ~= 0 then
+function sequenceTarget.read(bytes: buffer, cursor: number): (Types.SequenceTarget, number)
+  if buffer.readu8(bytes, cursor) ~= 0 then
     local name
-    name, p = readString(b, p + 1)
-    return { External = name }, p
+    name, cursor = readString(bytes, cursor + 1)
+    return { External = name }, cursor
   end
 
-  return { Internal = { buffer.readi32(b, p + 1), buffer.readi32(b, p + 5) } }, p + 9
+  return {
+    Internal = { buffer.readi32(bytes, cursor + 1), buffer.readi32(bytes, cursor + 5) },
+  }, cursor + 9
 end
 
-function sequenceTarget.write(w: Writer, value: Types.SequenceTarget, _map: Map)
-  Writer.reserve(w, 9)
+function sequenceTarget.write(writer: Writer, value: Types.SequenceTarget, _map: Map)
+  Writer.reserve(writer, 9)
   local external = value.External
   if external then
-    buffer.writeu8(w.b, w.p, 1)
-    w.p += 1
-    Writer.string(w, external)
+    buffer.writeu8(writer.bytes, writer.cursor, 1)
+    writer.cursor += 1
+    Writer.string(writer, external)
     return
   end
 
   local internal = value.Internal :: { number }
-  buffer.writeu8(w.b, w.p, 0)
-  buffer.writei32(w.b, w.p + 1, internal[1])
-  buffer.writei32(w.b, w.p + 5, internal[2])
-  w.p += 9
+  buffer.writeu8(writer.bytes, writer.cursor, 0)
+  buffer.writei32(writer.bytes, writer.cursor + 1, internal[1])
+  buffer.writei32(writer.bytes, writer.cursor + 5, internal[2])
+  writer.cursor += 9
 end
 
 -- A sequence's controllers: { name, controller index } pairs.
@@ -570,29 +585,29 @@ local nameControllerPairs = {}
 --- A name and a controller index.
 type Pair = { string | number }
 
-function nameControllerPairs.read(b: buffer, p: number): ({ Pair }, number)
-  local count = buffer.readu32(b, p)
-  p += 4
+function nameControllerPairs.read(bytes: buffer, cursor: number): ({ Pair }, number)
+  local count = buffer.readu32(bytes, cursor)
+  cursor += 4
   local pairs = table.create(count) :: { Pair }
-  for i = 1, count do
+  for index = 1, count do
     local name
-    name, p = readString(b, p)
-    pairs[i] = { name, buffer.readi32(b, p) }
-    p += 4
+    name, cursor = readString(bytes, cursor)
+    pairs[index] = { name, buffer.readi32(bytes, cursor) }
+    cursor += 4
   end
 
-  return pairs, p
+  return pairs, cursor
 end
 
-function nameControllerPairs.write(w: Writer, value: { Pair }, _map: Map)
-  Writer.reserve(w, 4)
-  buffer.writeu32(w.b, w.p, #value)
-  w.p += 4
+function nameControllerPairs.write(writer: Writer, value: { Pair }, _map: Map)
+  Writer.reserve(writer, 4)
+  buffer.writeu32(writer.bytes, writer.cursor, #value)
+  writer.cursor += 4
   for _, pair in value do
-    Writer.string(w, pair[1] :: string)
-    Writer.reserve(w, 4)
-    buffer.writei32(w.b, w.p, pair[2] :: number)
-    w.p += 4
+    Writer.string(writer, pair[1] :: string)
+    Writer.reserve(writer, 4)
+    buffer.writei32(writer.bytes, writer.cursor, pair[2] :: number)
+    writer.cursor += 4
   end
 end
 
@@ -602,60 +617,65 @@ local NoViews: { View } = table.freeze({} :: { View })
 -- Shared normals: a u16 count of lists, each a u16 count of u16 vertex indices.
 local sharedNormals = {}
 
-function sharedNormals.read(b: buffer, p: number): ({ View }, number)
-  local count = buffer.readu16(b, p)
-  p += 2
-  if count == 0 then return NoViews, p end
+function sharedNormals.read(bytes: buffer, cursor: number): ({ View }, number)
+  local count = buffer.readu16(bytes, cursor)
+  cursor += 2
+  if count == 0 then return NoViews, cursor end
 
   local lists = table.create(count) :: { View }
-  for i = 1, count do
-    local length = buffer.readu16(b, p)
-    lists[i] = Array.view(b, p + 2, length, 'u16')
-    p += 2 + length * 2
+  for index = 1, count do
+    local length = buffer.readu16(bytes, cursor)
+    lists[index] = Array.view(bytes, cursor + 2, length, 'u16')
+    cursor += 2 + length * 2
   end
 
-  return lists, p
+  return lists, cursor
 end
 
-function sharedNormals.write(w: Writer, value: { View }, _map: Map)
-  Writer.reserve(w, 2)
-  buffer.writeu16(w.b, w.p, #value)
-  w.p += 2
+function sharedNormals.write(writer: Writer, value: { View }, _map: Map)
+  Writer.reserve(writer, 2)
+  buffer.writeu16(writer.bytes, writer.cursor, #value)
+  writer.cursor += 2
   for _, indices in value do
-    Writer.reserve(w, 2)
-    buffer.writeu16(w.b, w.p, indices.count)
-    w.p += 2
-    Array.write(w, indices)
+    Writer.reserve(writer, 2)
+    buffer.writeu16(writer.bytes, writer.cursor, indices.count)
+    writer.cursor += 2
+    Array.write(writer, indices)
   end
 end
 
 -- UV sets: `sets` arrays of `vertices` coordinates, stored one set after another.
 local uvSets = {}
 
-function uvSets.read(b: buffer, p: number, sets: number, vertices: number): ({ View }, number)
-  if sets * vertices == 0 then return NoViews, p end
+function uvSets.read(
+  bytes: buffer,
+  cursor: number,
+  sets: number,
+  vertices: number
+): ({ View }, number)
+  if sets * vertices == 0 then return NoViews, cursor end
 
   local lists = table.create(sets) :: { View }
   for set = 1, sets do
-    lists[set] = Array.view(b, p, vertices, 'vec2')
-    p += vertices * 8
+    lists[set] = Array.view(bytes, cursor, vertices, 'vec2')
+    cursor += vertices * 8
   end
 
-  return lists, p
+  return lists, cursor
 end
 
-function uvSets.write(w: Writer, value: { View }, _map: Map)
+function uvSets.write(writer: Writer, value: { View }, _map: Map)
   for _, coordinates in value do
-    Array.write(w, coordinates)
+    Array.write(writer, coordinates)
   end
 end
 
 --- The parts of a geometry record its UV set count is worked out from.
 type Geometry = { vertices: View, uvSets: { View } }
 
-local function uvSetTotal(r: Geometry): number
+local function uvSetTotal(record: Geometry): number
   local total = 0
-  for _, coordinates in r.uvSets do
+  for _, coordinates in record.uvSets do
     total += coordinates.count
   end
 
@@ -663,11 +683,11 @@ local function uvSetTotal(r: Geometry): number
 end
 
 --- How many sets the saved record says it has: the coordinates over the vertices.
-local function uvSetCount(r: Geometry): number
-  local vertices = r.vertices.count
+local function uvSetCount(record: Geometry): number
+  local vertices = record.vertices.count
   if vertices == 0 then return 0 end
 
-  return uvSetTotal(r) // vertices
+  return uvSetTotal(record) // vertices
 end
 
 return table.freeze {

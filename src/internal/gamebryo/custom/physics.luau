@@ -5,42 +5,52 @@
 OpenMW's `components/nif/physics.hpp` values and checks the schema can't state as steps.
 ]]
 
-local G = require '../stream'
-local L = require '../links'
+local Stream = require '../stream'
+local Links = require '../links'
 
-type Stream = G.Stream
+type Stream = Stream.Stream
 
 local custom = {}
 
 --- One `TriangleData`: three `u16` vertices, the welding info, and, up to Oblivion, a normal.
-local function packedTriangle(b: buffer, p: number): any
+local function packedTriangle(bytes: buffer, cursor: number): any
   return {
-    triangle = { buffer.readu16(b, p), buffer.readu16(b, p + 2), buffer.readu16(b, p + 4) },
-    weldingInfo = buffer.readu16(b, p + 6),
+    triangle = {
+      buffer.readu16(bytes, cursor),
+      buffer.readu16(bytes, cursor + 2),
+      buffer.readu16(bytes, cursor + 4),
+    },
+    weldingInfo = buffer.readu16(bytes, cursor + 6),
     normal = vector.zero,
   }
 end
 
-local function packedTriangleWithNormal(b: buffer, p: number): any
-  local triangle = packedTriangle(b, p)
+local function packedTriangleWithNormal(bytes: buffer, cursor: number): any
+  local triangle = packedTriangle(bytes, cursor)
   triangle.normal =
-    vector.create(buffer.readf32(b, p + 8), buffer.readf32(b, p + 12), buffer.readf32(b, p + 16))
+    vector.create(
+      buffer.readf32(bytes, cursor + 8),
+      buffer.readf32(bytes, cursor + 12),
+      buffer.readf32(bytes, cursor + 16)
+    )
   return triangle
 end
 
 --- `hkPackedNiTriStripsData`'s triangles after a `u32` count, each read when asked for; up to
 --- Oblivion they carry normals. Like jess-nif, the count isn't checked against the file size.
-function custom.packedTriangles(s: Stream, p: number): (any, number)
-  local count = buffer.readu32(s.b, p)
-  local normals = s.version <= 0x14000005
+function custom.packedTriangles(stream: Stream, cursor: number): (any, number)
+  local count = buffer.readu32(stream.bytes, cursor)
+  local normals = stream.version <= 0x14000005
   local stride = if normals then 20 else 8
-  if p + 4 + count * stride > s.n then
-    G.fail(`Failed to read TriangleData: {stride} bytes at offset {p + 4} of {s.n}`)
+  if cursor + 4 + count * stride > stream.length then
+    Stream.fail(
+      `Failed to read TriangleData: {stride} bytes at offset {cursor + 4} of {stream.length}`
+    )
   end
 
-  return G.rows(
-    s,
-    p + 4,
+  return Stream.rows(
+    stream,
+    cursor + 4,
     count,
     stride,
     if normals then packedTriangleWithNormal else packedTriangle
@@ -48,61 +58,61 @@ function custom.packedTriangles(s: Stream, p: number): (any, number)
 end
 
 --- `bhkPoseArray`'s poses: a `u32` count of poses, each a `u32` count of bone transforms.
-function custom.poses(s: Stream, p: number): ({ { any } }, number)
-  local b = s.b
-  local count = buffer.readu32(b, p)
-  p += 4
+function custom.poses(stream: Stream, cursor: number): ({ { any } }, number)
+  local bytes = stream.bytes
+  local count = buffer.readu32(bytes, cursor)
+  cursor += 4
   local poses: { { any } } = {}
-  for i = 1, count do
-    local length = buffer.readu32(b, p)
-    p += 4
-    if p + length * 40 > s.n then
-      G.fail(`Failed to read bhkPoseArray: 40 bytes at offset {p} of {s.n}`)
+  for index = 1, count do
+    local length = buffer.readu32(bytes, cursor)
+    cursor += 4
+    if cursor + length * 40 > stream.length then
+      Stream.fail(`Failed to read bhkPoseArray: 40 bytes at offset {cursor} of {stream.length}`)
     end
 
     local pose = table.create(length) :: { any }
-    for j = 1, length do
-      pose[j] = {
+    for bone = 1, length do
+      pose[bone] = {
         translation = vector.create(
-          buffer.readf32(b, p),
-          buffer.readf32(b, p + 4),
-          buffer.readf32(b, p + 8)
+          buffer.readf32(bytes, cursor),
+          buffer.readf32(bytes, cursor + 4),
+          buffer.readf32(bytes, cursor + 8)
         ),
         rotation = {
-          buffer.readf32(b, p + 16),
-          buffer.readf32(b, p + 20),
-          buffer.readf32(b, p + 24),
-          buffer.readf32(b, p + 12),
+          buffer.readf32(bytes, cursor + 16),
+          buffer.readf32(bytes, cursor + 20),
+          buffer.readf32(bytes, cursor + 24),
+          buffer.readf32(bytes, cursor + 12),
         },
         scale = vector.create(
-          buffer.readf32(b, p + 28),
-          buffer.readf32(b, p + 32),
-          buffer.readf32(b, p + 36)
+          buffer.readf32(bytes, cursor + 28),
+          buffer.readf32(bytes, cursor + 32),
+          buffer.readf32(bytes, cursor + 36)
         ),
       }
-      p += 40
+      cursor += 40
     end
 
-    poses[i] = pose
+    poses[index] = pose
   end
 
-  return poses, p
+  return poses, cursor
 end
 
 --- `bhkConstraint`'s entities, which its info holds.
-function custom.constraintLinks(r: any, records: { any }, classes: { string }, index: number)
-  L.link(r.info.entityA, 'bhkEntity', records, classes, index)
-  L.link(r.info.entityB, 'bhkEntity', records, classes, index)
+function custom.constraintLinks(record: any, records: { any }, classes: { string }, index: number)
+  Links.link(record.info.entityA, 'bhkEntity', records, classes, index)
+  Links.link(record.info.entityB, 'bhkEntity', records, classes, index)
 end
 
 --- `bhkBallSocketConstraintChain`'s entities; OpenMW leaves its info's links unresolved.
 function custom.constraintChainLinks(
-  r: any,
+  record: any,
   records: { any },
   classes: { string },
   index: number
 )
-  L.links(r.constraintChainInfo.entities, 'bhkRigidBody', records, classes, index)
+  Links.links(record.constraintChainInfo.entities, 'bhkRigidBody', records, classes, index)
 end
 
 return custom

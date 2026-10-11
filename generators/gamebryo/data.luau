@@ -7,6 +7,9 @@ local Schema = require '../gamebryo_schema'
 
 local class, struct = Schema.class, Schema.struct
 
+--- A pixel format channel that wasn't read.
+local NoChannel = 'DefaultStruct.NiPixelFormatChannelData()'
+
 class('NiGeometryData', nil, {
   { 'groupId', 'i32', when = 'V >= @10.1.0.114' },
   { 'numVertices', 'u16' },
@@ -110,7 +113,7 @@ struct('NiPixelFormat', {
     'NiPixelFormatChannelData',
     fixed = 4,
     when = 'V > @10.4.0.1',
-    default = '{ D.NiPixelFormatChannelData(), D.NiPixelFormatChannelData(), D.NiPixelFormatChannelData(), D.NiPixelFormatChannelData() }',
+    default = `\{ {NoChannel}, {NoChannel}, {NoChannel}, {NoChannel} }`,
   },
 })
 
@@ -204,20 +207,20 @@ struct('NiSkinPartitionPartition', {
   { 'boneIndices', 'u8', count = '_numVertices * _bonesPerVertex', when = '_hasBoneIndices ~= 0' },
   { 'lodLevel', 'u8', when = 'BV > FO3' },
   { 'globalVb', 'bool', when = 'BV > FO3' },
-  { 'vertexDesc', 'custom:vertexDesc', when = 'BV == SSE', default = 'C.noVertexDesc()' },
+  { 'vertexDesc', 'custom:vertexDesc', when = 'BV == SSE', default = 'Custom.noVertexDesc()' },
   { 'trueTriangles', 'u16', count = '_numTriangles * 3', when = 'BV == SSE' },
   -- Not part of loading, but OpenMW does it here, without checking the indices.
   { '_remap', expr = '#trueTriangles == 0 and #vertexMap > 0', default = 'false' },
   {
     'trueStrips',
-    expr = 'C.remapStrips(strips, vertexMap)',
+    expr = 'Custom.remapStrips(strips, vertexMap)',
     when = '_remap and #strips > 0',
     default = '{}',
   },
 
   {
     'trueTriangles',
-    expr = 'C.remap(triangles, vertexMap)',
+    expr = 'Custom.remap(triangles, vertexMap)',
     when = '_remap and #strips == 0 and #triangles > 0',
   },
 })
@@ -226,7 +229,7 @@ class('NiSkinPartition', nil, {
   { '_numPartitions', 'u32' },
   { 'dataSize', 'u32', when = 'BV == SSE' },
   { 'vertexSize', 'u32', when = 'BV == SSE' },
-  { 'vertexDesc', 'custom:vertexDesc', when = 'BV == SSE', default = 'C.noVertexDesc()' },
+  { 'vertexDesc', 'custom:vertexDesc', when = 'BV == SSE', default = 'Custom.noVertexDesc()' },
   -- OpenMW divides without checking; a vertex size of 0 would crash it.
   { check = 'BV ~= SSE or vertexSize ~= 0', message = 'NiSkinPartition vertex size is 0' },
   {

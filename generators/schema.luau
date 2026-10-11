@@ -21,11 +21,13 @@ A field is `{ name, kind, ...options }`, read and written in order:
   field only when true, and leaves it nil otherwise.
 - `fixed = n` reads exactly n elements.
 - A name starting with `_` is a local, not a field: it is read, and written from `save`, an
-  expression over the record `r`. `expr` makes a local computed rather than read.
-- `stash = 'key'` keeps the value in the scratch table `S` for a derived record's fields, which
-  are read by another function.
+  expression over what is being written, `record` in a record and `struct` in a struct. `expr`
+  makes a local computed rather than read.
+- `stash = 'key'` keeps the value in the scratch table `Stash` for a derived record's fields,
+  which are read by another function.
 
-Expressions are Luau source over the locals read so far, `S`, and `r`.
+Expressions are Luau source over the locals read so far, `Stash`, the codecs in `Custom`, and,
+in a scanner's, the file's `bytes`.
 ]]
 
 export type Field = {
@@ -205,8 +207,8 @@ end
 
 local function f32s(names: { string }, first: number): { ArrayValue }
   local values = {}
-  for i, name in names do
-    table.insert(values, scalar(name, 'f32', first + (i - 1) * 4))
+  for index, name in names do
+    table.insert(values, scalar(name, 'f32', first + (index - 1) * 4))
   end
 
   return values
@@ -509,10 +511,10 @@ local Structs: { [string]: Definition } = {
 
   Partition = {
     fields = {
-      { '_numVertices', 'u16', save = 'r.vertexIndices.count' },
-      { '_numTriangles', 'u16', save = 'r.triangles.count' },
-      { '_numBones', 'u16', save = 'r.bones.count' },
-      { '_numStripLengths', 'u16', save = 'r.stripLengths.count' },
+      { '_numVertices', 'u16', save = 'struct.vertexIndices.count' },
+      { '_numTriangles', 'u16', save = 'struct.triangles.count' },
+      { '_numBones', 'u16', save = 'struct.bones.count' },
+      { '_numStripLengths', 'u16', save = 'struct.stripLengths.count' },
       { 'numBonesPerVertex', 'u16' },
       { '_numWeights', expr = '_numVertices * numBonesPerVertex' },
       { 'bones', 'u16', count = '_numBones' },
@@ -524,9 +526,9 @@ local Structs: { [string]: Definition } = {
         'strips',
         'u16',
         count = 'Array.sum(stripLengths)',
-        scanCount = 'C.sumU16(b, stripLengthsAt, _numStripLengths)',
+        scanCount = 'Custom.sumU16(bytes, stripLengthsAt, _numStripLengths)',
       },
-      { '_hasBonePalette', 'u8', save = 'r.bonePalette and 1 or 0' },
+      { '_hasBonePalette', 'u8', save = 'struct.bonePalette and 1 or 0' },
       { 'bonePalette', 'u8', count = '_numWeights', when = '_hasBonePalette ~= 0' },
     },
   },
@@ -534,7 +536,7 @@ local Structs: { [string]: Definition } = {
   MorphTarget = {
     fields = {
       { 'keys', 'custom:morphKeys' },
-      { 'vertices', 'vec3', count = 'S.morphVertices' },
+      { 'vertices', 'vec3', count = 'Stash.morphVertices' },
     },
   },
   FloatData = { fields = { { 'keys', 'custom:floatKeys' } } },
@@ -567,7 +569,7 @@ record('NiAVObject', {
     { 'scale', 'f32' },
     { 'velocity', 'vec3' },
     { 'properties', 'link', list = 'u32' },
-    { '_hasBoundingVolume', 'u32', save = 'r.boundingVolume and 1 or 0' },
+    { '_hasBoundingVolume', 'u32', save = 'record.boundingVolume and 1 or 0' },
     { 'boundingVolume', 'custom:boundingVolume', when = '_hasBoundingVolume ~= 0' },
   },
 })
@@ -683,17 +685,17 @@ alias('NiRotatingParticles', 'NiParticles')
 record('NiGeometryData', {
   base = 'NiObject',
   fields = {
-    { '_numVertices', 'u16', save = 'r.vertices.count' },
-    { '_hasVertices', 'u32', save = 'r.vertices.count > 0 and 1 or 0' },
+    { '_numVertices', 'u16', save = 'record.vertices.count' },
+    { '_hasVertices', 'u32', save = 'record.vertices.count > 0 and 1 or 0' },
     { '_count', expr = '_hasVertices ~= 0 and _numVertices or 0', stash = 'vertexCount' },
     { 'vertices', 'vec3', count = '_count' },
-    { '_hasNormals', 'u32', save = 'r.normals.count > 0 and 1 or 0' },
+    { '_hasNormals', 'u32', save = 'record.normals.count > 0 and 1 or 0' },
     { 'normals', 'vec3', count = '_hasNormals ~= 0 and _count or 0' },
     { 'bound', 'NiBound' },
-    { '_hasVertexColors', 'u32', save = 'r.vertexColors.count > 0 and 1 or 0' },
+    { '_hasVertexColors', 'u32', save = 'record.vertexColors.count > 0 and 1 or 0' },
     { 'vertexColors', 'vec4', count = '_hasVertexColors ~= 0 and _count or 0' },
-    { '_numUvSets', 'u16', save = 'C.uvSetCount(r)' },
-    { '_hasUvSets', 'u32', save = 'C.uvSetTotal(r) > 0 and 1 or 0' },
+    { '_numUvSets', 'u16', save = 'Custom.uvSetCount(record)' },
+    { '_hasUvSets', 'u32', save = 'Custom.uvSetTotal(record) > 0 and 1 or 0' },
     {
       'uvSets',
       'custom:uvSets',
@@ -708,8 +710,8 @@ alias('NiTriBasedGeomData', 'NiGeometryData')
 record('NiTriShapeData', {
   base = 'NiTriBasedGeomData',
   fields = {
-    { '_numTriangles', 'u16', save = 'r.triangles.count' },
-    { '_numTrianglePoints', 'u32', save = 'r.triangles.count * 3' },
+    { '_numTriangles', 'u16', save = 'record.triangles.count' },
+    { '_numTrianglePoints', 'u32', save = 'record.triangles.count * 3' },
     { 'triangles', 'tri', count = '_numTrianglePoints // 3' },
     { 'sharedNormals', 'custom:sharedNormals' },
   },
@@ -724,20 +726,20 @@ record('NiTriStripsData', {
   base = 'NiTriBasedGeomData',
   fields = {
     { 'numTriangles', 'u16' },
-    { '_numStripLengths', 'u16', save = 'r.stripLengths.count' },
+    { '_numStripLengths', 'u16', save = 'record.stripLengths.count' },
     { 'stripLengths', 'u16', count = '_numStripLengths' },
     {
       'strips',
       'u16',
       count = 'Array.sum(stripLengths)',
-      scanCount = 'C.sumU16(b, stripLengthsAt, _numStripLengths)',
+      scanCount = 'Custom.sumU16(bytes, stripLengthsAt, _numStripLengths)',
     },
   },
 })
 
 record('NiLinesData', {
   base = 'NiGeometryData',
-  fields = { { 'vertexConnectivityFlags', 'u8', count = 'S.vertexCount' } },
+  fields = { { 'vertexConnectivityFlags', 'u8', count = 'Stash.vertexCount' } },
 })
 
 record('NiParticlesData', {
@@ -746,8 +748,8 @@ record('NiParticlesData', {
     { 'numParticles', 'u16' },
     { 'particleRadius', 'f32' },
     { 'numActive', 'u16' },
-    { '_hasSizes', 'u32', save = 'r.sizes.count > 0 and 1 or 0' },
-    { 'sizes', 'f32', count = '_hasSizes ~= 0 and S.vertexCount or 0' },
+    { '_hasSizes', 'u32', save = 'record.sizes.count > 0 and 1 or 0' },
+    { 'sizes', 'f32', count = '_hasSizes ~= 0 and Stash.vertexCount or 0' },
   },
 })
 
@@ -756,8 +758,8 @@ alias('NiAutoNormalParticlesData', 'NiParticlesData')
 record('NiRotatingParticlesData', {
   base = 'NiParticlesData',
   fields = {
-    { '_hasRotations', 'u32', save = 'r.rotations.count > 0 and 1 or 0' },
-    { 'rotations', 'quat', count = '_hasRotations ~= 0 and S.vertexCount or 0' },
+    { '_hasRotations', 'u32', save = 'record.rotations.count > 0 and 1 or 0' },
+    { 'rotations', 'quat', count = '_hasRotations ~= 0 and Stash.vertexCount or 0' },
   },
 })
 
@@ -772,7 +774,7 @@ record('NiSkinData', {
     { 'rotation', 'mat3' },
     { 'translation', 'vec3' },
     { 'scale', 'f32' },
-    { '_numBoneData', 'u32', save = '#r.boneData' },
+    { '_numBoneData', 'u32', save = '#record.boneData' },
     { 'skinPartition', 'link' },
     { 'boneData', 'BoneData', count = '_numBoneData' },
   },
@@ -788,7 +790,7 @@ record('NiPixelData', {
   fields = {
     { 'pixelFormat', 'NiPixelFormat' },
     { 'palette', 'link' },
-    { '_numMipmaps', 'u32', save = 'r.mipmaps.count' },
+    { '_numMipmaps', 'u32', save = 'record.mipmaps.count' },
     { 'pixelStride', 'u32' },
     { 'mipmaps', 'u32x3', count = '_numMipmaps', doc = 'Each `{ width, height, offset }`.' },
     { 'pixelData', 'u8', list = 'u32' },
@@ -1078,11 +1080,11 @@ record('NiUVData', {
 record('NiMorphData', {
   base = 'NiObject',
   fields = {
-    { '_numTargets', 'u32', save = '#r.targets' },
+    { '_numTargets', 'u32', save = '#record.targets' },
     {
       '_numVertices',
       'u32',
-      save = 'r.targets[1] and r.targets[1].vertices.count or 0',
+      save = 'record.targets[1] and record.targets[1].vertices.count or 0',
       stash = 'morphVertices',
     },
     { 'relativeTargets', 'bool8' },
@@ -1096,11 +1098,11 @@ alias('NiSequenceStreamHelper', 'NiObjectNET')
 record('NiScreenPolygon', {
   base = 'NiObject',
   fields = {
-    { '_numVertices', 'u16', save = 'r.vertices.count' },
+    { '_numVertices', 'u16', save = 'record.vertices.count' },
     { 'vertices', 'vec3', count = '_numVertices' },
-    { '_hasUvCoords', 'u32', save = 'r.uvCoords.count > 0 and 1 or 0' },
+    { '_hasUvCoords', 'u32', save = 'record.uvCoords.count > 0 and 1 or 0' },
     { 'uvCoords', 'vec2', count = '_hasUvCoords ~= 0 and _numVertices or 0' },
-    { '_hasVertexColors', 'u32', save = 'r.vertexColors.count > 0 and 1 or 0' },
+    { '_hasVertexColors', 'u32', save = 'record.vertexColors.count > 0 and 1 or 0' },
     { 'vertexColors', 'vec4', count = '_hasVertexColors ~= 0 and _numVertices or 0' },
     { 'propertyStates', 'i32', list = 'u32' },
   },

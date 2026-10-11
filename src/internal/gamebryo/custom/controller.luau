@@ -6,137 +6,137 @@ OpenMW's `components/nif/controller.hpp` values and checks the schema can't stat
 links read here are checked by the record's post functions, in the order OpenMW resolves them.
 ]]
 
-local G = require '../stream'
-local L = require '../links'
+local Stream = require '../stream'
+local Links = require '../links'
 
-type Stream = G.Stream
+type Stream = Stream.Stream
 
 local custom = {}
 
 --- `RecordPtrT::read`: one link, -1 or a record index.
-function custom.ptr(s: Stream, p: number): (number, number)
-  local index = buffer.readi32(s.b, p)
-  if index < -1 then G.invalidLink(index) end
+function custom.ptr(stream: Stream, cursor: number): (number, number)
+  local index = buffer.readi32(stream.bytes, cursor)
+  if index < -1 then Stream.invalidLink(index) end
 
-  return index, p + 4
+  return index, cursor + 4
 end
 
 --- `count` links.
-function custom.ptrs(s: Stream, p: number, count: number): ({ number }, number)
-  return G.links(s, p, count), p + count * 4
+function custom.ptrs(stream: Stream, cursor: number, count: number): ({ number }, number)
+  return Stream.links(stream, cursor, count), cursor + count * 4
 end
 
 --- `RecordListT`: a `u32` count of links.
-function custom.ptrList(s: Stream, p: number): ({ number }, number)
-  return custom.ptrs(s, p + 4, buffer.readu32(s.b, p))
+function custom.ptrList(stream: Stream, cursor: number): ({ number }, number)
+  return custom.ptrs(stream, cursor + 4, buffer.readu32(stream.bytes, cursor))
 end
 
 --- `count` link lists.
-function custom.ptrLists(s: Stream, p: number, count: number): ({ { number } }, number)
+function custom.ptrLists(stream: Stream, cursor: number, count: number): ({ { number } }, number)
   local lists = table.create(count) :: { { number } }
-  for i = 1, count do
-    lists[i], p = custom.ptrList(s, p)
+  for index = 1, count do
+    lists[index], cursor = custom.ptrList(stream, cursor)
   end
 
-  return lists, p
+  return lists, cursor
 end
 
 --- `NiBoneLODController`'s skinned shape groups: a `u32` count of groups, each a `u32` count of
 --- `SkinInfo`s.
-function custom.skinInfoGroups(s: Stream, p: number): ({ { any } }, number)
-  local b = s.b
-  local count = buffer.readu32(b, p)
-  p += 4
+function custom.skinInfoGroups(stream: Stream, cursor: number): ({ { any } }, number)
+  local bytes = stream.bytes
+  local count = buffer.readu32(bytes, cursor)
+  cursor += 4
   local groups = table.create(count) :: { { any } }
-  for i = 1, count do
-    local length = buffer.readu32(b, p)
-    p += 4
+  for index = 1, count do
+    local length = buffer.readu32(bytes, cursor)
+    cursor += 4
     local group = table.create(length) :: { any }
-    for k = 1, length do
+    for member = 1, length do
       local shape, skin
-      shape, p = custom.ptr(s, p)
-      skin, p = custom.ptr(s, p)
-      group[k] = { shape = shape, skin = skin }
+      shape, cursor = custom.ptr(stream, cursor)
+      skin, cursor = custom.ptr(stream, cursor)
+      group[member] = { shape = shape, skin = skin }
     end
 
-    groups[i] = group
+    groups[index] = group
   end
 
-  return groups, p
+  return groups, cursor
 end
 
 --- `NiGeomMorpherController`'s interpolators: a link list up to Oblivion (followed, in
 --- Bethesda's 10.2 files, by values OpenMW skips), then interpolator and weight pairs.
-function custom.morphInterpolators(s: Stream, p: number): (any, number)
-  local b, version = s.b, s.version
+function custom.morphInterpolators(stream: Stream, cursor: number): (any, number)
+  local bytes, version = stream.bytes, stream.version
   if version <= 0x14000005 then
     local interpolators
-    interpolators, p = custom.ptrList(s, p)
-    if version >= 0x0A020000 and s.bethVersion >= 10 then
-      local unknown = buffer.readu32(b, p)
-      p = G.skip(s, p + 4, unknown * 4)
+    interpolators, cursor = custom.ptrList(stream, cursor)
+    if version >= 0x0A020000 and stream.bethVersion >= 10 then
+      local unknown = buffer.readu32(bytes, cursor)
+      cursor = Stream.skip(stream, cursor + 4, unknown * 4)
     end
 
-    return { interpolators = interpolators, weights = {} :: { number } }, p
+    return { interpolators = interpolators, weights = {} :: { number } }, cursor
   end
 
-  local count = buffer.readu32(b, p)
-  p += 4
+  local count = buffer.readu32(bytes, cursor)
+  cursor += 4
   local interpolators, weights = {} :: { number }, {} :: { number }
-  for i = 1, count do
-    interpolators[i], p = custom.ptr(s, p)
-    weights[i] = buffer.readf32(b, p)
-    p += 4
+  for index = 1, count do
+    interpolators[index], cursor = custom.ptr(stream, cursor)
+    weights[index] = buffer.readf32(bytes, cursor)
+    cursor += 4
   end
 
-  return { interpolators = interpolators, weights = weights }, p
+  return { interpolators = interpolators, weights = weights }, cursor
 end
 
-function custom.sequenceLinks(r: any, records: { any }, classes: { string }, index: number)
-  L.link(r.textKeys, 'Extra', records, classes, index)
-  for _, block in r.controlledBlocks do
-    L.link(block.interpolator, 'NiInterpolator', records, classes, index)
-    L.link(block.controller, 'NiTimeController', records, classes, index)
-    L.link(block.blendInterpolator, 'NiBlendInterpolator', records, classes, index)
-    L.link(block.stringPalette, 'NiStringPalette', records, classes, index)
+function custom.sequenceLinks(record: any, records: { any }, classes: { string }, index: number)
+  Links.link(record.textKeys, 'Extra', records, classes, index)
+  for _, block in record.controlledBlocks do
+    Links.link(block.interpolator, 'NiInterpolator', records, classes, index)
+    Links.link(block.controller, 'NiTimeController', records, classes, index)
+    Links.link(block.blendInterpolator, 'NiBlendInterpolator', records, classes, index)
+    Links.link(block.stringPalette, 'NiStringPalette', records, classes, index)
   end
 end
 
 function custom.controllerSequenceLinks(
-  r: any,
+  record: any,
   records: { any },
   classes: { string },
   index: number
 )
-  L.link(r.manager, 'NiControllerManager', records, classes, index)
-  L.link(r.stringPalette, 'NiStringPalette', records, classes, index)
+  Links.link(record.manager, 'NiControllerManager', records, classes, index)
+  Links.link(record.stringPalette, 'NiStringPalette', records, classes, index)
 end
 
-function custom.morphLinks(r: any, records: { any }, classes: { string }, index: number)
-  L.links(r.interpolators, 'NiInterpolator', records, classes, index)
+function custom.morphLinks(record: any, records: { any }, classes: { string }, index: number)
+  Links.links(record.interpolators, 'NiInterpolator', records, classes, index)
 end
 
-function custom.boneLodLinks(r: any, records: { any }, classes: { string }, index: number)
-  for _, group in r.nodeGroups do
-    L.links(group, 'NiAVObject', records, classes, index)
+function custom.boneLodLinks(record: any, records: { any }, classes: { string }, index: number)
+  for _, group in record.nodeGroups do
+    Links.links(group, 'NiAVObject', records, classes, index)
   end
 
-  for _, group in r.skinnedShapeGroups do
+  for _, group in record.skinnedShapeGroups do
     for _, info in group do
-      L.link(info.shape, 'NiTriBasedGeom', records, classes, index)
-      L.link(info.skin, 'NiSkinInstance', records, classes, index)
+      Links.link(info.shape, 'NiTriBasedGeom', records, classes, index)
+      Links.link(info.skin, 'NiSkinInstance', records, classes, index)
     end
   end
 
-  L.links(r.shapeGroups, 'NiTriBasedGeom', records, classes, index)
+  Links.links(record.shapeGroups, 'NiTriBasedGeom', records, classes, index)
 end
 
-function custom.blendLinks(r: any, records: { any }, classes: { string }, index: number)
-  for _, item in r.items do
-    L.link(item.interpolator, 'NiInterpolator', records, classes, index)
+function custom.blendLinks(record: any, records: { any }, classes: { string }, index: number)
+  for _, item in record.items do
+    Links.link(item.interpolator, 'NiInterpolator', records, classes, index)
   end
 
-  L.link(r.singleInterpolator, 'NiInterpolator', records, classes, index)
+  Links.link(record.singleInterpolator, 'NiInterpolator', records, classes, index)
 end
 
 return custom

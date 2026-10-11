@@ -65,32 +65,32 @@ Nif.__index = Nif
 export type Nif = typeof(setmetatable({} :: NifData, Nif))
 
 --- The record at a 1-based index, decoded the first time it is asked for.
-local function decode(state: Nif, i: number): Record
-  local decoded = state.decoded[i]
+local function decode(state: Nif, slot: number): Record
+  local decoded = state.decoded[slot]
   if decoded then return decoded end
 
-  local name = state.types[i]
-  decoded = Load[name].read(state.source, state.bodies[i], name)
-  state.decoded[i] = decoded
+  local name = state.types[slot]
+  decoded = Load[name].read(state.source, state.bodies[slot], name)
+  state.decoded[slot] = decoded
   return decoded
 end
 
 local function record(state: Nif, index: number): Record?
-  local i = index + 1
-  if i < 1 or i > state.count or state.removed[i] then return nil end
+  local slot = index + 1
+  if slot < 1 or slot > state.count or state.removed[slot] then return nil end
 
-  return decode(state, i)
+  return decode(state, slot)
 end
 
 --- The links a record holds now: from the scan when it was never decoded, else from its fields.
-local function linksOf(state: Nif, i: number, scratch: Links): (Links, number, number)
-  if not state.decoded[i] then
-    local first = if i == 1 then 1 else state.linkEnds[i - 1] + 1
-    return state.links, first, state.linkEnds[i]
+local function linksOf(state: Nif, slot: number, scratch: Links): (Links, number, number)
+  if not state.decoded[slot] then
+    local first = if slot == 1 then 1 else state.linkEnds[slot - 1] + 1
+    return state.links, first, state.linkEnds[slot]
   end
 
-  local n = Load[state.types[i]].links(state.decoded[i], scratch, 0)
-  return scratch, 1, n
+  local linkCount = Load[state.types[slot]].links(state.decoded[slot], scratch, 0)
+  return scratch, 1, linkCount
 end
 
 --- Puts back the signaling NaNs a decode turned quiet. Luau numbers are doubles, and widening an
@@ -99,30 +99,33 @@ end
 --- that wrote a NaN (the writer says so) and is the same length as its source gets back every four
 --- bytes that differ only that way; arrays are copied, so their bits never change.
 local function restoreNans(out: buffer, at: number, source: buffer, from: number, length: number)
-  local i = 0
-  while i < length do
-    if i + 4 <= length and buffer.readu32(out, at + i) == buffer.readu32(source, from + i) then
-      i += 4
+  local offset = 0
+  while offset < length do
+    if
+      offset + 4 <= length
+      and buffer.readu32(out, at + offset) == buffer.readu32(source, from + offset)
+    then
+      offset += 4
       continue
     end
 
-    if buffer.readu8(out, at + i) == buffer.readu8(source, from + i) then
-      i += 1
+    if buffer.readu8(out, at + offset) == buffer.readu8(source, from + offset) then
+      offset += 1
       continue
     end
 
-    for s = math.max(0, i - 3), math.min(i, length - 4) do
-      local original = buffer.readu32(source, from + s)
+    for start = math.max(0, offset - 3), math.min(offset, length - 4) do
+      local original = buffer.readu32(source, from + start)
       local quiet = bit32.bor(original, 0x00400000)
       local nan = bit32.band(original, 0x7f800000) == 0x7f800000
         and bit32.band(original, 0x007fffff) ~= 0
-      if nan and original ~= quiet and buffer.readu32(out, at + s) == quiet then
-        buffer.writeu32(out, at + s, original)
+      if nan and original ~= quiet and buffer.readu32(out, at + start) == quiet then
+        buffer.writeu32(out, at + start, original)
         break
       end
     end
 
-    i += 1
+    offset += 1
   end
 end
 
@@ -139,23 +142,23 @@ local function reachable(state: Nif): ({ boolean }, { boolean })
   end
 
   while top > 0 do
-    local i = stack[top]
+    local slot = stack[top]
     top -= 1
-    if i > count or keep[i] or state.removed[i] then continue end
+    if slot > count or keep[slot] or state.removed[slot] then continue end
 
-    keep[i] = true
+    keep[slot] = true
     -- From the scan when the record was never decoded, else from its fields now.
     local links: Links, first: number, last: number = scratch, 1, 0
-    if decoded[i] then
-      last = Load[state.types[i]].links(decoded[i], scratch, 0) :: number
+    if decoded[slot] then
+      last = Load[state.types[slot]].links(decoded[slot], scratch, 0) :: number
     else
-      links, first, last = scanned, if i == 1 then 1 else linkEnds[i - 1] + 1, linkEnds[i]
+      links, first, last = scanned, if slot == 1 then 1 else linkEnds[slot - 1] + 1, linkEnds[slot]
     end
 
-    for j = first, last do
-      local target = links[j] + 1
+    for entry = first, last do
+      local target = links[entry] + 1
       if target > count then
-        dangling[i] = true
+        dangling[slot] = true
       elseif not keep[target] then
         top += 1
         stack[top] = target
@@ -171,9 +174,9 @@ local function save(state: Nif): buffer
   local keep, dangling = reachable(state)
   local scratch = {}
   local map, kept = {}, 0
-  for i = 1, count do
-    if keep[i] then
-      map[i - 1] = kept
+  for slot = 1, count do
+    if keep[slot] then
+      map[slot - 1] = kept
       kept += 1
     end
   end
@@ -181,12 +184,12 @@ local function save(state: Nif): buffer
   local identity = kept == count
   local source = state.source
   -- Sized for the common case, a save with nothing dropped or decoded: then it fills exactly.
-  local w = Writer.new(state.rootsAt + 4 + 4 * #state.roots)
-  Writer.reserve(w, 48)
-  buffer.writestring(w.b, 0, Header)
-  buffer.writeu32(w.b, 40, Version)
-  buffer.writeu32(w.b, 44, kept)
-  w.p = 48
+  local writer = Writer.new(state.rootsAt + 4 + 4 * #state.roots)
+  Writer.reserve(writer, 48)
+  buffer.writestring(writer.bytes, 0, Header)
+  buffer.writeu32(writer.bytes, 40, Version)
+  buffer.writeu32(writer.bytes, 44, kept)
+  writer.cursor = 48
 
   -- Untouched records next to each other in the source go out in one copy.
   local runStart, runStop = 0, 0
@@ -194,32 +197,32 @@ local function save(state: Nif): buffer
     local length = runStop - runStart
     if length == 0 then return end
 
-    Writer.reserve(w, length)
-    buffer.copy(w.b, w.p, source, runStart, length)
-    w.p += length
+    Writer.reserve(writer, length)
+    buffer.copy(writer.bytes, writer.cursor, source, runStart, length)
+    writer.cursor += length
     runStart, runStop = 0, 0
   end
 
-  for i = 1, count do
-    if not keep[i] then
+  for slot = 1, count do
+    if not keep[slot] then
       flush()
       continue
     end
 
     -- A record added since opening has no bytes to copy.
-    if i > state.fromFile then
+    if slot > state.fromFile then
       flush()
-      local name = state.types[i]
-      Writer.string(w, name)
-      Load[name].write(w, state.decoded[i], map)
+      local name = state.types[slot]
+      Writer.string(writer, name)
+      Load[name].write(writer, state.decoded[slot], map)
       continue
     end
 
-    local start = state.starts[i]
-    local stop = if i == state.fromFile then state.rootsAt else state.starts[i + 1]
-    local reencode = state.decoded[i] ~= nil or dangling[i]
+    local start = state.starts[slot]
+    local stop = if slot == state.fromFile then state.rootsAt else state.starts[slot + 1]
+    local reencode = state.decoded[slot] ~= nil or dangling[slot]
     if not identity and not reencode then
-      local _, first, last = linksOf(state, i, scratch)
+      local _, first, last = linksOf(state, slot, scratch)
       reencode = last >= first
     end
 
@@ -234,27 +237,29 @@ local function save(state: Nif): buffer
     end
 
     flush()
-    local decoded = decode(state, i)
-    local name = state.types[i]
-    local at = w.p
-    w.nan = false
-    Writer.string(w, name)
-    Load[name].write(w, decoded, map)
-    if w.nan and w.p - at == stop - start then restoreNans(w.b, at, source, start, stop - start) end
+    local decoded = decode(state, slot)
+    local name = state.types[slot]
+    local at = writer.cursor
+    writer.nan = false
+    Writer.string(writer, name)
+    Load[name].write(writer, decoded, map)
+    if writer.nan and writer.cursor - at == stop - start then
+      restoreNans(writer.bytes, at, source, start, stop - start)
+    end
   end
 
   flush()
 
   local roots = state.roots
-  Writer.reserve(w, 4 + 4 * #roots)
-  buffer.writeu32(w.b, w.p, #roots)
-  w.p += 4
+  Writer.reserve(writer, 4 + 4 * #roots)
+  buffer.writeu32(writer.bytes, writer.cursor, #roots)
+  writer.cursor += 4
   for _, root in roots do
-    buffer.writei32(w.b, w.p, Writer.link(root, map))
-    w.p += 4
+    buffer.writei32(writer.bytes, writer.cursor, Writer.link(root, map))
+    writer.cursor += 4
   end
 
-  return Writer.finish(w)
+  return Writer.finish(writer)
 end
 
 --- The record at a 0-based index, or nil past the end.
@@ -266,12 +271,12 @@ function Nif.record(self: Nif, index: number): Record? return record(self, index
 --- it, arrays and all. Keep one table per record type: a read sets its own type's fields, and
 --- leaves another type's where they were. Edits belong in `record`, whose tables `save` writes.
 function Nif.read(self: Nif, index: number, into: { [string]: unknown }): Record?
-  local i = index + 1
-  if i < 1 or i > self.count or self.removed[i] then return nil end
+  local slot = index + 1
+  if slot < 1 or slot > self.count or self.removed[slot] then return nil end
 
-  local name = self.types[i]
+  local name = self.types[slot]
   local record = (into :: unknown) :: Record
-  Load[name].fill(self.source, self.bodies[i], name, record)
+  Load[name].fill(self.source, self.bodies[slot], name, record)
   return record
 end
 
@@ -284,8 +289,8 @@ end
 
 --- A decoded record's 0-based index.
 function Nif.indexOf(self: Nif, target: Record): number?
-  for i, decoded in self.decoded do
-    if decoded == target then return i - 1 end
+  for slot, decoded in self.decoded do
+    if decoded == target then return slot - 1 end
   end
 
   return nil
@@ -297,15 +302,15 @@ function Nif.isDecoded(self: Nif, index: number): boolean return self.decoded[in
 --- The records with their 0-based indices, in file order, each decoded as it is reached;
 --- removed ones are skipped.
 function Nif.records(self: Nif): () -> (number?, Record?)
-  local i = -1
+  local index = -1
   return function()
     repeat
-      i += 1
-    until i >= self.count or not self.removed[i + 1]
+      index += 1
+    until index >= self.count or not self.removed[index + 1]
 
-    if i >= self.count then return nil, nil end
+    if index >= self.count then return nil, nil end
 
-    return i, record(self, i)
+    return index, record(self, index)
   end
 end
 
@@ -317,19 +322,19 @@ end
 function Nif.insert(self: Nif, fields: { [string]: any }): number
   local made = Edit.fromFields(fields)
   Edit.derive(made, fields)
-  local i = self.count + 1
-  self.count = i
-  self.types[i], self.decoded[i] = made.type, made
-  return i - 1
+  local slot = self.count + 1
+  self.count = slot
+  self.types[slot], self.decoded[slot] = made.type, made
+  return slot - 1
 end
 
 --- Removes the record at a 0-based index, and the roots that were it. Links to it save as
 --- empty; its index stays empty.
 function Nif.remove(self: Nif, index: number): boolean
-  local i = index + 1
-  if i < 1 or i > self.count or self.removed[i] then return false end
+  local slot = index + 1
+  if slot < 1 or slot > self.count or self.removed[slot] then return false end
 
-  self.removed[i], self.decoded[i] = true, nil
+  self.removed[slot], self.decoded[slot] = true, nil
   local roots = {}
   for _, root in self.roots do
     if root ~= index then table.insert(roots, root) end
@@ -353,16 +358,16 @@ function Nif.find(self: Nif, spec: { type: (string | { string })?, name: string?
 
   local pattern = if spec and spec.name then jess.regex.new('(?i)' .. spec.name) else nil
   local found = {}
-  for i = 0, self.count - 1 do
-    local name = self:typeOf(i)
+  for index = 0, self.count - 1 do
+    local name = self:typeOf(index)
     if not name or (wanted and not wanted[string.lower(name)]) then continue end
 
     if pattern then
-      local value = (record(self, i) :: any).name
+      local value = (record(self, index) :: any).name
       if type(value) ~= 'string' or not pattern:isMatch(value) then continue end
     end
 
-    table.insert(found, i)
+    table.insert(found, index)
   end
 
   return found
@@ -589,41 +594,41 @@ function Nif.save(self: Nif): buffer return save(self) end
 
 --- Opens a NIF from its bytes. Errors name what's wrong, as jess-nif's do.
 local function open(data: buffer | string): Nif
-  local b = if type(data) == 'string' then buffer.fromstring(data) else data
-  if buffer.len(b) < 48 or buffer.readstring(b, 0, 40) ~= Header then
+  local source = if type(data) == 'string' then buffer.fromstring(data) else data
+  if buffer.len(source) < 48 or buffer.readstring(source, 0, 40) ~= Header then
     error('Invalid NIF Header', 0)
   end
 
-  if buffer.readu32(b, 40) ~= Version then error('Invalid NIF Version', 0) end
+  if buffer.readu32(source, 40) ~= Version then error('Invalid NIF Version', 0) end
 
-  local count = buffer.readu32(b, 44)
-  local reserve = math.min(count, buffer.len(b) // 4)
+  local count = buffer.readu32(source, 44)
+  local reserve = math.min(count, buffer.len(source) // 4)
   local starts, bodies, linkEnds =
     table.create(reserve) :: { number },
     table.create(reserve) :: { number },
     table.create(reserve) :: { number }
   local types = table.create(reserve) :: { string }
   local links: Links = {}
-  local p, n = 48, 0
-  for i = 1, count do
-    local length = buffer.readu32(b, p)
-    local token = TypeNames:find(b, p + 4, length)
+  local cursor, linkCount = 48, 0
+  for slot = 1, count do
+    local length = buffer.readu32(source, cursor)
+    local token = TypeNames:find(source, cursor + 4, length)
     if not token then error('Invalid Type', 0) end
 
-    starts[i], bodies[i], types[i] = p, p + 4 + length, NameByToken[token]
-    p, n = ScanByToken[token](b, p + 4 + length, links, n)
-    linkEnds[i] = n
+    starts[slot], bodies[slot], types[slot] = cursor, cursor + 4 + length, NameByToken[token]
+    cursor, linkCount = ScanByToken[token](source, cursor + 4 + length, links, linkCount)
+    linkEnds[slot] = linkCount
   end
 
-  local rootsAt = p
-  local rootCount = buffer.readu32(b, p)
-  local roots = table.create(math.min(rootCount, buffer.len(b) // 4)) :: { number }
-  for i = 1, rootCount do
-    roots[i] = buffer.readi32(b, p + i * 4)
+  local rootsAt = cursor
+  local rootCount = buffer.readu32(source, cursor)
+  local roots = table.create(math.min(rootCount, buffer.len(source) // 4)) :: { number }
+  for entry = 1, rootCount do
+    roots[entry] = buffer.readi32(source, cursor + entry * 4)
   end
 
   local state = {
-    source = b,
+    source = source,
     count = count,
     roots = roots,
     starts = starts,

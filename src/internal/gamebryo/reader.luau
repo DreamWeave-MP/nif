@@ -10,10 +10,10 @@ inspecting and checking; `nif.open` is the editable model of Morrowind NIFs.
 ]]
 
 local Classes = require './classes'
-local G = require './stream'
+local Stream = require './stream'
 local Header = require '../header'
 -- Generated nonstrict; a codec is the record class's `read` and `check`.
-local L = require './links'
+local Links = require './links'
 local Load: { [string]: any } = require './load' :: any
 
 local Factory = Classes.factory
@@ -37,12 +37,12 @@ export type File = {
 --- and then every link, which must point to a record of the right class. Errors are tables,
 --- `{ message, record }`, worded as OpenMW words them.
 local function open(data: buffer | string): File
-  local b = if type(data) == 'string' then buffer.fromstring(data) else data
-  local header = Header.parse(b)
+  local bytes = if type(data) == 'string' then buffer.fromstring(data) else data
+  local header = Header.parse(bytes)
   local fileVersion = header.version
-  local s: G.Stream = {
-    b = b,
-    n = buffer.len(b),
+  local stream: Stream.Stream = {
+    bytes = bytes,
+    length = buffer.len(bytes),
     version = fileVersion,
     userVersion = header.userVersion,
     bethVersion = header.bethVersion or 0,
@@ -53,55 +53,55 @@ local function open(data: buffer | string): File
   local listed = fileVersion >= 0x05000001
   local separators = fileVersion >= 0x0A000000 and fileVersion < 0x0A020000
   local count = header.recordCount
-  local reserve = math.min(count, buffer.len(b) // 4)
+  local reserve = math.min(count, buffer.len(bytes) // 4)
   local records: { any } = table.create(reserve)
   local names, classes, recordTypes =
     table.create(reserve) :: { string },
     table.create(reserve) :: { string },
     table.create(reserve) :: { string }
-  local p = header.size
-  for i = 1, count do
-    G.at(i - 1)
+  local cursor = header.size
+  for slot = 1, count do
+    Stream.at(slot - 1)
     local name: string
     if listed then
-      name = Header.recordType(header, i - 1) or G.fail(`Record {i - 1} has no type`)
+      name = Header.recordType(header, slot - 1) or Stream.fail(`Record {slot - 1} has no type`)
     else
-      name, p = G.string(s, p)
+      name, cursor = Stream.string(stream, cursor)
     end
 
-    if name == '' then G.fail(`Record type is blank (index {i - 1})`) end
+    if name == '' then Stream.fail(`Record type is blank (index {slot - 1})`) end
 
     if separators and string.sub(name, 1, 3) ~= 'bhk' then
-      local separator = buffer.readi32(b, p)
-      p += 4
-      if separator ~= 0 then G.fail(`Non-zero separator precedes {name}, index {i - 1}`) end
+      local separator = buffer.readi32(bytes, cursor)
+      cursor += 4
+      if separator ~= 0 then Stream.fail(`Non-zero separator precedes {name}, index {slot - 1}`) end
     end
 
     local entry = Factory[name]
-    if not entry then G.fail(`Unknown record type {name}`) end
+    if not entry then Stream.fail(`Unknown record type {name}`) end
 
     local codec = Load[entry[1]]
-    if not codec then G.fail(`No reader for class {entry[1]} ({name})`) end
+    if not codec then Stream.fail(`No reader for class {entry[1]} ({name})`) end
 
-    s.recordName = name
-    records[i], p = codec.read(s, p)
-    names[i], classes[i], recordTypes[i] = name, entry[1], entry[2]
+    stream.recordName = name
+    records[slot], cursor = codec.read(stream, cursor)
+    names[slot], classes[slot], recordTypes[slot] = name, entry[1], entry[2]
   end
 
-  G.at(nil)
-  local rootCount = buffer.readu32(b, p)
-  local roots = table.create(math.min(rootCount, buffer.len(b) // 4)) :: { number }
-  for i = 1, rootCount do
-    roots[i] = buffer.readi32(b, p + i * 4)
+  Stream.at(nil)
+  local rootCount = buffer.readu32(bytes, cursor)
+  local roots = table.create(math.min(rootCount, buffer.len(bytes) // 4)) :: { number }
+  for entry = 1, rootCount do
+    roots[entry] = buffer.readi32(bytes, cursor + entry * 4)
   end
 
-  L.setNames(names)
-  for i, record in records do
-    G.at(i - 1)
-    Load[classes[i]].check(record, records, classes, i - 1)
+  Links.setNames(names)
+  for slot, record in records do
+    Stream.at(slot - 1)
+    Load[classes[slot]].check(record, records, classes, slot - 1)
   end
 
-  G.at(nil)
+  Stream.at(nil)
   return {
     header = header,
     records = records,

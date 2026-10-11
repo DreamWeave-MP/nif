@@ -17,7 +17,7 @@ export type Step = {
   default: string?,
   expr: string?,
   skip: (number | string)?,
-  ret: string?,
+  stop: string?,
   check: string?,
   message: string?,
   doc: string?,
@@ -42,8 +42,7 @@ export type Definition = {
   doc: string?,
 }
 
-local classes: { [string]: Definition } = {}
-local structs: { [string]: Definition } = {}
+local classes: { [string]: Definition }, structs: { [string]: Definition } = {}, {}
 
 local function class(
   name: string,

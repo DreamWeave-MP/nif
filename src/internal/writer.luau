@@ -3,15 +3,15 @@
 
 local Text = require './text'
 
---- A growing output buffer: `b` holds the bytes written so far, `p` is the next free byte, `n` is
---- `b`'s length (`buffer.len` is a call, and the writers check room before every run), and `nan`
---- says a float written since it was last cleared was NaN.
-export type Writer = { b: buffer, p: number, n: number, nan: boolean }
+--- A growing output buffer: `bytes` holds what is written so far, `cursor` is the next free byte,
+--- `capacity` is the buffer's length (`buffer.len` is a call, and the writers check room before
+--- every run), and `nan` says a float written since it was last cleared was NaN.
+export type Writer = { bytes: buffer, cursor: number, capacity: number, nan: boolean }
 
---- Makes room for `size` more bytes at `w.p`, doubling the buffer as needed.
-local function reserve(w: Writer, size: number)
-  local need = w.p + size
-  local length = w.n
+--- Makes room for `size` more bytes at the cursor, doubling the buffer as needed.
+local function reserve(writer: Writer, size: number)
+  local need = writer.cursor + size
+  local length = writer.capacity
   if need <= length then return end
 
   while length < need do
@@ -19,32 +19,32 @@ local function reserve(w: Writer, size: number)
   end
 
   local grown = buffer.create(length)
-  buffer.copy(grown, 0, w.b, 0, w.p)
-  w.b, w.n = grown, length
+  buffer.copy(grown, 0, writer.bytes, 0, writer.cursor)
+  writer.bytes, writer.capacity = grown, length
 end
 
 local function new(size: number): Writer
   local length = math.max(size, 64)
-  return { b = buffer.create(length), p = 0, n = length, nan = false }
+  return { bytes = buffer.create(length), cursor = 0, capacity = length, nan = false }
 end
 
 --- The bytes written, trimmed to their length.
-local function finish(w: Writer): buffer
-  if w.p == w.n then return w.b end
+local function finish(writer: Writer): buffer
+  if writer.cursor == writer.capacity then return writer.bytes end
 
-  local out = buffer.create(w.p)
-  buffer.copy(out, 0, w.b, 0, w.p)
+  local out = buffer.create(writer.cursor)
+  buffer.copy(out, 0, writer.bytes, 0, writer.cursor)
   return out
 end
 
 --- A string as a u32 length and its Windows-1252 bytes, with no terminator.
-local function writeString(w: Writer, text: string)
+local function writeString(writer: Writer, text: string)
   local value = Text.encode(text)
   local length = #value
-  reserve(w, 4 + length)
-  buffer.writeu32(w.b, w.p, length)
-  buffer.writestring(w.b, w.p + 4, value)
-  w.p += 4 + length
+  reserve(writer, 4 + length)
+  buffer.writeu32(writer.bytes, writer.cursor, length)
+  buffer.writestring(writer.bytes, writer.cursor + 4, value)
+  writer.cursor += 4 + length
 end
 
 --- A link as its index in the saved file: -1 when null or when its record is not saved.

@@ -7,7 +7,8 @@ data: the record class hierarchy (`struct Name : public Base` in the headers, te
 instantiations through `using`), the record types (`RC_*` in `record.hpp`), and the record
 factory (`niffile.cpp`). Writes `nif/gamebryo/classes.luau`:
 
-  jess run generators/openmw.luau <openmw checkout> src/internal/gamebryo
+  jess run --capability filesystem.read --capability filesystem.write \
+    generators/openmw.luau <openmw checkout> src/internal/gamebryo
 
 Run it after updating the OpenMW checkout; the record readers themselves are `gamebryo.luau`'s
 schema, which follows the same headers by hand.
@@ -44,7 +45,7 @@ local parents: { [string]: string } = {}
 local templates: { [string]: boolean } = {}
 for _, header in headers do
   local list = lines(read(header))
-  for i, line in list do
+  for number, line in list do
     local name, base = string.match(line, '^%s*struct%s+([%w_]+)%s*:%s*public%s+([%w_:]+)')
     if not name then
       name, base = string.match(line, '^%s*struct%s+([%w_]+)%s*:%s*([%w_:]+)')
@@ -54,7 +55,7 @@ for _, header in headers do
 
     if name == 'Parents' or name == 'Children' then name = 'BSConnectPoint' .. name end
 
-    if i > 1 and string.match(list[i - 1], '^%s*template') then templates[name] = true end
+    if number > 1 and string.match(list[number - 1], '^%s*template') then templates[name] = true end
 
     parents[name] = base
   end
@@ -62,8 +63,7 @@ end
 
 -- `using Name = Template<Args>;` instantiates a class under the template's base, and aliases of
 -- one instantiation are one class; `using Name = Class;` renames a class.
-local aliases: { [string]: string } = {}
-local instances: { [string]: string } = {}
+local aliases: { [string]: string }, instances: { [string]: string } = {}, {}
 for _, header in headers do
   for _, line in lines(read(header)) do
     local name, target, args = string.match(line, '^%s*using%s+([%w_]+)%s*=%s*([%w_]+)(%b<>)%s*;')

@@ -22,7 +22,7 @@ class('NiAVObject', 'NiObjectNET', {
   { 'velocity', 'vec3', when = 'V <= @4.2.2.0' },
   { 'properties', 'links:NiProperty', when = 'BV <= FO3' },
   { '_hasBounds', 'bool', when = 'V <= @4.2.2.0' },
-  { 'bounds', 'custom:boundingVolume', when = '_hasBounds', default = 'C.noBounds()' },
+  { 'bounds', 'custom:boundingVolume', when = '_hasBounds', default = 'Custom.noBounds()' },
   { 'collision', 'link:NiCollisionObject', when = 'V >= @10.0.1.0' },
 })
 
@@ -32,7 +32,7 @@ class('NiNode', 'NiAVObject', {
 })
 
 struct('NiGeometryMaterialData', {
-  { ret = 'V < @10.0.1.0' },
+  { stop = 'V < @10.0.1.0' },
   { '_count', 'u32', when = 'V >= @20.2.0.5' },
   { '_flag', 'bool', when = 'V < @20.2.0.5 and V <= @20.1.0.3' },
   { '_count', expr = 'if _flag then 1 else _count' },
@@ -102,7 +102,7 @@ struct('NiLODNodeLODRange', {
 
 class('NiLODNode', 'NiSwitchNode', {
   { skip = 4, when = 'V > @10.0.1.0' },
-  { ret = 'V > @10.0.1.0' },
+  { stop = 'V > @10.0.1.0' },
   { 'lodCenter', 'vec3', when = 'V >= VER_MW' },
   { 'lodLevels', 'NiLODNodeLODRange', list = 'u32' },
 })

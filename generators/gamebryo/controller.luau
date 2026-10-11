@@ -17,7 +17,7 @@ struct('NiQuatTransform', {
   { 'rotation', 'quat' },
   { 'scale', 'f32', default = '1' },
   -- Before 10.1.0.110 each part is followed by whether it's used; unused parts are identity.
-  { ret = 'V >= @10.1.0.110' },
+  { stop = 'V >= @10.1.0.110' },
   { '_hasTranslation', 'bool' },
   { 'translation', expr = 'if _hasTranslation then translation else vector.zero' },
   { '_hasRotation', 'bool' },
@@ -31,7 +31,7 @@ struct('ControlledBlock', {
   { 'targetName', 'sstring', when = 'V <= @10.1.0.103' },
   { 'interpolator', 'link:NiInterpolator', when = 'V >= @10.1.0.106' },
   { 'controller', 'link:NiTimeController', when = 'V <= @20.5.0.0' },
-  { ret = 'V <= @10.1.0.103' },
+  { stop = 'V <= @10.1.0.103' },
   { 'blendInterpolator', 'link:NiBlendInterpolator', when = 'V <= @10.1.0.110' },
   { 'blendIndex', 'u16', when = 'V <= @10.1.0.110' },
   { 'priority', 'u8', when = 'V >= @10.1.0.106 and BV > 0' },
@@ -59,7 +59,7 @@ class('NiSequence', nil, {
 }, { post = { 'sequenceLinks' } })
 
 class('NiControllerSequence', 'NiSequence', {
-  { ret = 'V <= @10.1.0.103' },
+  { stop = 'V <= @10.1.0.103' },
   { 'weight', 'f32', default = '1' },
   { 'textKeys', 'custom:ptr' },
   { 'extrapolationMode', 'u32', default = '4' },
@@ -194,10 +194,10 @@ class('NiGeomMorpherController', 'NiInterpController', {
   { '_updateNormals', 'u16', when = 'V >= VER_OB_OLD' },
   { 'updateNormals', expr = 'bit32.btest(_updateNormals, 1)', default = 'false' },
   { 'data', 'link:NiMorphData' },
-  { ret = 'V < VER_MW' },
+  { stop = 'V < VER_MW' },
   { '_alwaysActive', 'u8' },
   { 'alwaysActive', expr = '_alwaysActive ~= 0', default = 'false' },
-  { ret = 'V <= @10.1.0.105' },
+  { stop = 'V <= @10.1.0.105' },
   { '_morph', 'custom:morphInterpolators' },
   { 'interpolators', expr = '_morph.interpolators', default = '{}' },
   { 'weights', expr = '_morph.weights', default = '{}' },
@@ -228,7 +228,7 @@ class('NiBoneLODController', 'NiTimeController', {
   { '_nodeGroups', 'u32' },
   { 'numNodeGroups', 'u32' },
   { 'nodeGroups', 'custom:ptrLists(_nodeGroups)', default = '{}' },
-  { ret = 'BV ~= 0 or V < @4.2.2.0' },
+  { stop = 'BV ~= 0 or V < @4.2.2.0' },
   { 'skinnedShapeGroups', 'custom:skinInfoGroups', default = '{}' },
   { 'shapeGroups', 'custom:ptrList', default = '{}' },
 }, { post = { 'boneLodLinks' } })
@@ -292,7 +292,7 @@ class('NiExtraDataController', 'NiSingleInterpController', {
 })
 
 class('NiFloatExtraDataController', 'NiExtraDataController', {
-  { ret = 'V >= @10.1.0.104' },
+  { stop = 'V >= @10.1.0.104' },
   { '_numExtraBytes', 'u8', when = 'V <= @10.1.0.0' },
   { skip = 7, when = 'V <= @10.1.0.0' },
   { skip = '_numExtraBytes', when = 'V <= @10.1.0.0' },
