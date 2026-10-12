@@ -365,7 +365,7 @@ local function pack(packed: Packing): buffer
   local out = buffer.create(packed.cursor)
   local cursor = 0
   for _, run in packed.runs do
-    local source, length = run.source, run.length
+    local {source, length} = run
     if source then
       buffer.copy(out, cursor, source, run.offset, length)
     elseif run.fill ~= 0 then
@@ -442,12 +442,9 @@ local function build(nif: any): Scene
     if not is(typeOf(root), 'NiNode') then return nil end
 
     local seen: { [number]: boolean } = {}
-    local stack: { number } = {}
     local children = nif:record(root).children
-    for entry = 1, children.count do
-      table.insert(stack, children:get(entry) :: number)
-    end
-
+    local stack: { number } =
+      [for entry in range(1, children.count) => children:get(entry) :: number]
     while #stack > 0 do
       local key = table.remove(stack) :: number
       local name = typeOf(key)
@@ -654,11 +651,7 @@ local function build(nif: any): Scene
     local normalList, colorList, uvLists = data.normals, data.vertexColors, data.uvSets
     local hasNormals = normalList.count == vertexCount
     local hasColors = colorList.count == vertexCount
-    local uvTotal = 0
-    for _, set in uvLists do
-      uvTotal += set.count
-    end
-
+    local uvTotal = sum[for set in uvLists => set.count]
     local uvSets = uvTotal // vertexCount
     local uvsMatch = uvTotal % vertexCount == 0
     if
