@@ -26,11 +26,14 @@ local Version = 0x04000002
 --- Every record type name, interned once: `open` finds a name's scanner by the bytes in place,
 --- without making a string, and a file naming an unknown type adds nothing.
 local TypeNames: dream_intern_Pool = intern.new 'exact'
-local ScanByToken: { Scan.Scanner }, NameByToken: { string } = {}, {}
-for name, walk in Scan.scan do
+local RequireScanByToken: { () -> Scan.Scanner }, NameByToken: { string } = {}, {}
+for name, requireScan in Scan.scan do
   local token = TypeNames:intern(name)
-  ScanByToken[token], NameByToken[token] = walk, name
+  RequireScanByToken[token], NameByToken[token] = requireScan, name
 end
+
+--- Each type's scanner once a file has held the type: its module is required then, not before.
+local ScanByToken: { Scan.Scanner } = {}
 
 --- What building and editing records needs (`nif/edit.luau`), required the first time a file is
 --- built or edited: a file that is only read, checked, or saved as it is never compiles it.
@@ -603,8 +606,14 @@ local function open(data: buffer | string): Nif
     local token = TypeNames:find(source, cursor + 4, length)
     if not token then error('Invalid Type', 0) end
 
+    local scan = ScanByToken[token]
+    if not scan then
+      scan = RequireScanByToken[token]()
+      ScanByToken[token] = scan
+    end
+
     starts[slot], bodies[slot], types[slot] = cursor, cursor + 4 + length, NameByToken[token]
-    cursor, linkCount = ScanByToken[token](source, cursor + 4 + length, links, linkCount)
+    cursor, linkCount = scan(source, cursor + 4 + length, links, linkCount)
     linkEnds[slot] = linkCount
   end
 
