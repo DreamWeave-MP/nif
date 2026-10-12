@@ -5,7 +5,8 @@
 --[[
 The NIF package, timed through its public modules on the suite's two files: opening, decoding,
 reading through one table, dumping, the array views' `get` and `toTable`, saving untouched and
-re-encoded, the checker, the scene, the tree, the fixes, and the multi-version reader:
+re-encoded, the checker, the scene, the tree, the fixes, and the multi-version reader; and on
+files built here, for the strips, the skin, and the derived geometry those two don't hold:
 
   jess run --capability filesystem.read --capability process.spawn --package . \
     bench/bench.luau [filter] [jess binary]
@@ -355,6 +356,161 @@ local function file(name: string, expected: Expected)
   end)
 end
 
+--- A square grid's vertices, `side` to a side, a unit apart, as coordinate lists.
+local function gridVertices(side: number): { { number } }
+  return [for row in range(0, side - 1) for column in range(0, side - 1) => { column, row, 0 }]
+end
+
+--- The grid's triangles, two to a cell.
+local function gridTriangles(side: number): { { number } }
+  local triangles = table.create((side - 1) * (side - 1) * 2) :: { { number } }
+  for row = 0, side - 2 do
+    for column = 0, side - 2 do
+      local corner = row * side + column
+      table.insert(triangles, { corner, corner + 1, corner + side })
+      table.insert(triangles, { corner + 1, corner + side + 1, corner + side })
+    end
+  end
+
+  return triangles
+end
+
+--- The grid as one `NiTriStrips` under a root: a strip for each row of cells, none of its
+--- triangles degenerate.
+local function stripsFile(side: number): buffer
+  local built = nif.new()
+  local root = built:insert { type = 'NiNode', name = 'Root' }
+  local points = table.create((side - 1) * side * 2) :: { number }
+  for row = 0, side - 2 do
+    for column = 0, side - 1 do
+      table.insert(points, row * side + column)
+      table.insert(points, (row + 1) * side + column)
+    end
+  end
+
+  local data = built:insert {
+    type = 'NiTriStripsData',
+    vertices = gridVertices(side),
+    stripLengths = table.create(side - 1, side * 2),
+    strips = points,
+  }
+
+  built:attach(root, built:insert { type = 'NiTriStrips', name = 'Strips', geometryData = data })
+  built.roots = { root }
+  return built:save()
+end
+
+--- The grid as one `NiTriShape` skinned to `bones` bones, each vertex weighted by two of them.
+--- The model builds everything but the weights, whose array kind only a file can supply: the
+--- bones are spliced into the saved `NiSkinData`, after its transform.
+local function skinnedFile(side: number, bones: number): buffer
+  local built = nif.new()
+  local root = built:insert { type = 'NiNode', name = 'Root' }
+  local nodes = table.create(bones) :: { number }
+  for bone = 1, bones do
+    nodes[bone] = built:insert { type = 'NiNode', name = `Bone {bone}` }
+    built:attach(root, nodes[bone])
+  end
+
+  local data = built:insert { type = 'NiSkinData' }
+  local skin = built:insert { type = 'NiSkinInstance', data = data, root = root, bones = nodes }
+  local shape = built:shape {
+    name = 'Skinned',
+    vertices = gridVertices(side),
+    triangles = gridTriangles(side),
+    parent = root,
+  }
+
+  local shapeRecord = built:record(shape) :: any
+  shapeRecord.skinInstance = skin
+  built.roots = { root }
+
+  local saved = buffer.tostring(built:save())
+  local body = nif.open(saved).bodies[data + 1]
+  local parts = { string.sub(saved, 1, body + 52), string.pack('<I4i4', bones, -1) }
+  for bone = 0, bones - 1 do
+    local weights = {}
+    for vertex = 0, side * side - 1 do
+      if vertex % bones == bone or (vertex + 1) % bones == bone then
+        table.insert(weights, string.pack('<I2f', vertex, 0.5))
+      end
+    end
+
+    -- An identity rotation, no translation, a scale of 1, and an empty bound.
+    table.insert(parts, string.pack('<fffffffffffff', 1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1))
+    table.insert(parts, string.rep('\0', 16) .. string.pack('<I2', #weights))
+    table.insert(parts, table.concat(weights))
+  end
+
+  table.insert(parts, string.sub(saved, body + 61))
+  return buffer.fromstring(table.concat(parts))
+end
+
+--- Files built here, for what the suite's two don't hold: long strips, a skin, and the geometry
+--- an edit derives.
+local function built()
+  local side = 64
+  local strips = stripsFile(side)
+  local triangles = (side - 1) * (side * 2 - 2)
+
+  -- One finding, here and for the skin: that many render triangles are a heavy collision shape.
+  workload('built strips check', triangles * 2 + 1, function(): number
+    local report = check.check('strips.nif', strips)
+    local stats = report.stats :: check.Stats
+    return #report.findings + stats.triangles + stats.collisionTriangles
+  end)
+
+  workload('built strips scene', triangles * 3 + 1, function(): number
+    local made = scene.build(nif.open(strips))
+    return made.buffers.indexCount + #made.drawables + #made.issues
+  end)
+
+  workload('built strips tree', triangles, function(): number
+    local tree = info.sceneTree(nif.open(strips))
+    local shape = ((tree[1].children :: { info.TreeNode })[1].shape :: info.ShapeInfo)
+    return shape.triangles
+  end)
+
+  local bones = 8
+  local skinned = skinnedFile(side, bones)
+  local weights = side * side * 2
+
+  workload('built skin check', (side - 1) * (side - 1) * 4 + 1, function(): number
+    local report = check.check('skinned.nif', skinned)
+    local stats = report.stats :: check.Stats
+    return #report.findings + stats.triangles + stats.collisionTriangles
+  end)
+
+  workload('built skin scene', weights + bones + 1, function(): number
+    local made = scene.build(nif.open(skinned))
+    return made.buffers.weightCount + #made.skinBones + #made.skins + #made.issues
+  end)
+
+  local vertices, faces = gridVertices(side), gridTriangles(side)
+
+  workload(`build a shape of {side * side} vertices`, 2, function(): number
+    local made = nif.new()
+    made:shape { name = 'Grid', vertices = vertices, triangles = faces }
+    return made.count
+  end)
+
+  local random = buffer.fromstring(support.asset 'random_objects.nif')
+
+  workload('random_objects update bounds', 7, function(): number
+    return nif.open(random):updateBounds()
+  end)
+
+  workload('random_objects compute normals', 7, function(): number
+    local opened = nif.open(random)
+    local shapes = opened:find { type = 'NiTriShapeData' }
+    for _, index in shapes do
+      opened:computeNormals(index)
+    end
+
+    return #shapes
+  end)
+end
+
 file('all_types', {
   open = 85,
   decode = 1313,
@@ -391,3 +547,5 @@ file('random_objects', {
   gamebryoWalk = 29921,
   gamebryoTree = 11,
 })
+
+built()
