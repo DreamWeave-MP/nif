@@ -9,7 +9,7 @@ effect, shape, particle system, and their controllers.
 
 local Base = require './base'
 
-local data = require '@dream/data'
+local dataPlane = require '@dream/data'
 
 type Checker = Base.Checker
 type RenderState = Base.RenderState
@@ -20,8 +20,8 @@ local {NiGeometryTypes, BsGeometryTypes} = Constants
 
 --- `u16`s side by side, the corners of triangles and the points of strips, and the `u16` that
 --- starts each six-byte skin weight: read by the data plane, a whole run in one call.
-local Corners: dream_data_Kind_u16 = data.u16()
-local WeightVertices: dream_data_Kind_u16 = data.u16(6)
+local Corners: dream_data_Kind_u16 = dataPlane.u16()
+local WeightVertices: dream_data_Kind_u16 = dataPlane.u16(6)
 
 --- How many triangles a `u16` view of triples holds and, given a shape's `vertices`, the first
 --- of their indices at or past them.
