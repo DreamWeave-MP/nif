@@ -5,8 +5,13 @@
 
 local Stream = require '../stream'
 local Links = require '../links'
-local Structs = require '../structs'
-local DefaultStruct = Structs.default
+local BSSPParallaxParams = require '../structs/BSSPParallaxParams'
+local BSSPRefractionParams = require '../structs/BSSPRefractionParams'
+
+local DefaultStruct = {
+  BSSPParallaxParams = BSSPParallaxParams.default,
+  BSSPRefractionParams = BSSPRefractionParams.default,
+}
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
   local bytes, version, userVersion, bethVersion =

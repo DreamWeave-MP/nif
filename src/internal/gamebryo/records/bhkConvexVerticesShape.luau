@@ -5,9 +5,9 @@
 
 local Array = require '../../array'
 local Stream = require '../stream'
-local Structs = require '../structs'
+local HavokMaterial = require '../structs/HavokMaterial'
 local Empties, Metas = Array.empty, Array.metas
-local ReadStruct = Structs.read
+local ReadStruct = { HavokMaterial = HavokMaterial.read }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
   local bytes, version, userVersion, bethVersion =

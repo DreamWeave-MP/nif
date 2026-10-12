@@ -5,9 +5,14 @@
 
 local Stream = require '../stream'
 local Links = require '../links'
-local Structs = require '../structs'
-local ReadStruct = Structs.read
-local StructRow = Structs.rows
+local BSFurnitureMarkerFurniturePosition = require '../structs/BSFurnitureMarkerFurniturePosition'
+local BSFurnitureMarkerLegacyFurniturePosition = require '../structs/BSFurnitureMarkerLegacyFurniturePosition'
+
+local ReadStruct = {
+  BSFurnitureMarkerLegacyFurniturePosition = BSFurnitureMarkerLegacyFurniturePosition.read,
+}
+
+local StructRow = { BSFurnitureMarkerFurniturePosition = BSFurnitureMarkerFurniturePosition.rows }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
   local bytes, version, userVersion, bethVersion =

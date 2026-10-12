@@ -6,8 +6,8 @@
 local Custom = require '../custom'
 local Stream = require '../stream'
 local Links = require '../links'
-local Structs = require '../structs'
-local StructRow = Structs.rows
+local BSDismemberSkinInstanceBodyPart = require '../structs/BSDismemberSkinInstanceBodyPart'
+local StructRow = { BSDismemberSkinInstanceBodyPart = BSDismemberSkinInstanceBodyPart.rows }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
   local bytes, version, userVersion, bethVersion =

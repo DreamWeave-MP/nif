@@ -5,8 +5,8 @@
 
 local Stream = require '../stream'
 local Links = require '../links'
-local Structs = require '../structs'
-local StructRow = Structs.rows
+local bhkWorldObjCInfoProperty = require '../structs/bhkWorldObjCInfoProperty'
+local StructRow = { bhkWorldObjCInfoProperty = bhkWorldObjCInfoProperty.rows }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
   local bytes, version, userVersion, bethVersion =

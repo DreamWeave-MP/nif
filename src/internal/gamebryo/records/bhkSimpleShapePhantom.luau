@@ -6,9 +6,9 @@
 local Array = require '../../array'
 local Stream = require '../stream'
 local Links = require '../links'
-local Structs = require '../structs'
+local bhkWorldObjectCInfo = require '../structs/bhkWorldObjectCInfo'
 local Empties, Metas = Array.empty, Array.metas
-local ReadStruct = Structs.read
+local ReadStruct = { bhkWorldObjectCInfo = bhkWorldObjectCInfo.read }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
   local bytes, version, userVersion, bethVersion =

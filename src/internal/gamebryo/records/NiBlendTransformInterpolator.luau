@@ -5,9 +5,15 @@
 
 local Custom = require '../custom'
 local Stream = require '../stream'
-local Structs = require '../structs'
-local ReadStruct = Structs.read
-local DefaultStruct = Structs.default
+local NiBlendInterpolatorItem = require '../structs/NiBlendInterpolatorItem'
+local NiQuatTransform = require '../structs/NiQuatTransform'
+
+local ReadStruct = {
+  NiBlendInterpolatorItem = NiBlendInterpolatorItem.read,
+  NiQuatTransform = NiQuatTransform.read,
+}
+
+local DefaultStruct = { NiQuatTransform = NiQuatTransform.default }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
   local bytes, version, userVersion, bethVersion =

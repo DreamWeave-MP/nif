@@ -6,8 +6,8 @@
 local Custom = require '../custom'
 local Stream = require '../stream'
 local Links = require '../links'
-local Structs = require '../structs'
-local ReadStruct = Structs.read
+local NiGeometryMaterialData = require '../structs/NiGeometryMaterialData'
+local ReadStruct = { NiGeometryMaterialData = NiGeometryMaterialData.read }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
   local bytes, version, userVersion, bethVersion =

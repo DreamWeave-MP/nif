@@ -5,8 +5,13 @@
 
 local Custom = require '../custom'
 local Stream = require '../stream'
-local Structs = require '../structs'
-local ReadStruct = Structs.read
+local bhkConstraintCInfo = require '../structs/bhkConstraintCInfo'
+local bhkMalleableConstraintCInfo = require '../structs/bhkMalleableConstraintCInfo'
+
+local ReadStruct = {
+  bhkConstraintCInfo = bhkConstraintCInfo.read,
+  bhkMalleableConstraintCInfo = bhkMalleableConstraintCInfo.read,
+}
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
   local bytes, version, userVersion, bethVersion =

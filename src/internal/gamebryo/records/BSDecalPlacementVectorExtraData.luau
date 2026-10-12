@@ -5,8 +5,11 @@
 
 local Stream = require '../stream'
 local Links = require '../links'
-local Structs = require '../structs'
-local ReadStruct = Structs.read
+local BSDecalPlacementVectorExtraDataBlock = require '../structs/BSDecalPlacementVectorExtraDataBlock'
+
+local ReadStruct = {
+  BSDecalPlacementVectorExtraDataBlock = BSDecalPlacementVectorExtraDataBlock.read,
+}
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
   local bytes, version, userVersion, bethVersion =

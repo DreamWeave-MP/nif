@@ -7,10 +7,25 @@ local Array = require '../../array'
 local Custom = require '../custom'
 local Stream = require '../stream'
 local Links = require '../links'
-local Structs = require '../structs'
+local BSSPLuminanceParams = require '../structs/BSSPLuminanceParams'
+local BSSPMLParallaxParams = require '../structs/BSSPMLParallaxParams'
+local BSSPParallaxParams = require '../structs/BSSPParallaxParams'
+local BSSPTranslucencyParams = require '../structs/BSSPTranslucencyParams'
+local BSSPWetnessParams = require '../structs/BSSPWetnessParams'
 local Empties, Metas = Array.empty, Array.metas
-local ReadStruct = Structs.read
-local DefaultStruct = Structs.default
+
+local ReadStruct = {
+  BSSPTranslucencyParams = BSSPTranslucencyParams.read,
+  BSSPWetnessParams = BSSPWetnessParams.read,
+}
+
+local DefaultStruct = {
+  BSSPLuminanceParams = BSSPLuminanceParams.default,
+  BSSPMLParallaxParams = BSSPMLParallaxParams.default,
+  BSSPParallaxParams = BSSPParallaxParams.default,
+  BSSPTranslucencyParams = BSSPTranslucencyParams.default,
+  BSSPWetnessParams = BSSPWetnessParams.default,
+}
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
   local bytes, version, userVersion, bethVersion =

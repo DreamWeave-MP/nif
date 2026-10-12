@@ -7,10 +7,10 @@ local Array = require '../../array'
 local Custom = require '../custom'
 local Stream = require '../stream'
 local Links = require '../links'
-local Structs = require '../structs'
+local NiGeometryMaterialData = require '../structs/NiGeometryMaterialData'
 local Empties, Metas = Array.empty, Array.metas
-local ReadStruct = Structs.read
-local DefaultStruct = Structs.default
+local ReadStruct = { NiGeometryMaterialData = NiGeometryMaterialData.read }
+local DefaultStruct = { NiGeometryMaterialData = NiGeometryMaterialData.default }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
   local bytes, version, userVersion, bethVersion =

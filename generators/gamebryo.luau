@@ -3,8 +3,8 @@
 
 --[[
 Turns `gamebryo_schema.luau` into the multi-version reader's codec modules under
-`nif/gamebryo/`: `structs.luau`, one module per record class in `records/`, and `load.luau`,
-which requires those on first use:
+`nif/gamebryo/`: one module per struct in `structs/`, one per record class in `records/`, and
+`load.luau`, which requires those on first use:
 
   jess run --capability filesystem.read --capability filesystem.write \
     generators/gamebryo.luau src/internal/gamebryo
@@ -848,56 +848,6 @@ local Header = {
   '',
 }
 
---- A module: the header, the requires and locals `body` uses, in one order everywhere, and the
---- body. `own` is the structs module itself, whose tables are its own and come first, since its
---- other locals name them.
-local function moduleText(body: { string }, prefix: string, own: boolean?): string
-  local text = table.concat(body, '\n')
-  local out = table.clone(Header)
-  local function uses(name: string): boolean
-    return string.find(text, `%f[%w_]{name}%f[^%w_]`) ~= nil
-  end
-
-  if own then
-    table.insert(out, 'local read = {}')
-    table.insert(out, 'local default = {}')
-    table.insert(out, 'local rows = {}')
-    table.insert(out, 'local shared = {}')
-    table.insert(out, '')
-  end
-
-  local views = uses 'Empties' and uses 'Metas'
-  if views then table.insert(out, `local Array = require '{prefix}../array'`) end
-
-  if uses 'Custom' then table.insert(out, `local Custom = require '{prefix}custom'`) end
-
-  if uses 'Stream' or uses 'Empties' then
-    table.insert(out, `local Stream = require '{prefix}stream'`)
-  end
-
-  if uses 'Links' then table.insert(out, `local Links = require '{prefix}links'`) end
-
-  local structs = uses 'ReadStruct' or uses 'DefaultStruct' or uses 'StructRow'
-  if structs and not own then table.insert(out, `local Structs = require '{prefix}structs'`) end
-
-  if views then
-    table.insert(out, 'local Empties, Metas = Array.empty, Array.metas')
-  elseif uses 'Empties' then
-    table.insert(out, `local Empties = require('{prefix}../array').empty`)
-  end
-
-  local from = if own then '' else 'Structs.'
-  if uses 'ReadStruct' then table.insert(out, `local ReadStruct = {from}read`) end
-
-  if uses 'DefaultStruct' then table.insert(out, `local DefaultStruct = {from}default`) end
-
-  if uses 'StructRow' then table.insert(out, `local StructRow = {from}rows`) end
-
-  table.insert(out, '')
-  table.move(body, 1, #body, #out + 1, out)
-  return table.concat(out, '\n') .. '\n'
-end
-
 local function sorted(map: { [string]: any }): { string }
   local list = {}
   for key in map do
@@ -908,56 +858,135 @@ local function sorted(map: { [string]: any }): { string }
   return list
 end
 
-local function structsModule(): string
-  local out: Out = { lines = {}, depth = 0 }
-  for _, name in sorted(Schema.structs) do
-    local definition = Schema.structs[name]
-    emit(out, '')
-    emitReader(
-      out,
-      `function read.{name}(stream: Stream.Stream, cursor: number): (any, number)`,
-      definition,
-      false,
-      false
-    )
-    emit(out, '')
-    local parts, seen = {}, {}
-    for _, step in flatten(definition, false) do
-      local field = step[1]
-      if
-        not field
-        or seen[field]
-        or string.sub(field, 1, 1) == '_'
-        or string.find(field, '.', 1, true)
-      then
-        continue
+--- The three tables a module reaches structs through, and what each holds of a struct's module.
+local StructTables = {
+  { 'ReadStruct', 'read' },
+  { 'DefaultStruct', 'default' },
+  { 'StructRow', 'rows' },
+}
+
+--- A module one folder below the reader's: the header, the requires and locals `body` uses, in
+--- one order everywhere, and the body. A struct is a module of its own, required by each module
+--- that reads it, so a file compiles the structs its records hold and no others; `structs` is
+--- where those modules are, from this one.
+local function moduleText(body: { string }, structs: string): string
+  local text = table.concat(body, '\n')
+  local out = table.clone(Header)
+  local function uses(name: string): boolean
+    return string.find(text, `%f[%w_]{name}%f[^%w_]`) ~= nil
+  end
+
+  local views = uses 'Empties' and uses 'Metas'
+  if views then table.insert(out, 'local Array = require \'../../array\'') end
+
+  if uses 'Custom' then table.insert(out, 'local Custom = require \'../custom\'') end
+
+  if uses 'Stream' or uses 'Empties' then
+    table.insert(out, 'local Stream = require \'../stream\'')
+  end
+
+  if uses 'Links' then table.insert(out, 'local Links = require \'../links\'') end
+
+  -- Each struct the body names through one of the tables, and each table's entries.
+  local required: { [string]: boolean } = {}
+  local tables: { string } = {}
+  for _, entry in StructTables do
+    local items, seen = {}, {}
+    for name in string.gmatch(text, `%f[%w_]{entry[1]}%.([%w_]+)`) do
+      if seen[name] then continue end
+
+      if string.find(text, `%f[%w_]local {name}%f[^%w_]`) then
+        error(`a reader of struct {name} has a local of that name`, 0)
       end
 
-      seen[field] = true
-      table.insert(parts, `{field} = {default(step)}`)
+      seen[name], required[name] = true, true
+      table.insert(items, name)
     end
 
-    -- The reader is read-only, so a struct's default is one frozen table, made when first used.
-    open(out, `function default.{name}(): any`)
-    emit(out, `local made = shared.{name}`)
-    emit(out, 'if made then return made end')
-    emit(out, '')
-    emit(out, `made = table.freeze(\{ {table.concat(parts, ', ')} })`)
-    emit(out, `shared.{name} = made`)
-    emit(out, 'return made')
-    close(out)
-    local inline = inlineStruct(name)
-    if inline then
-      emit(out, '')
-      oneLine(out, `function rows.{name}(bytes: buffer, cursor: number): any`, `return {inline}`)
+    table.sort(items)
+    for index, name in items do
+      items[index] = `{name} = {name}.{entry[2]}`
+    end
+
+    if #items > 0 then
+      table.insert(tables, `local {entry[1]} = \{ {table.concat(items, ', ')} }`)
     end
   end
 
-  emit(out, '')
-  emit(out, 'return { read = read, default = default, rows = rows }')
+  for _, name in sorted(required) do
+    table.insert(out, `local {name} = require '{structs}{name}'`)
+  end
 
-  -- A struct reads other structs through `read`, defined above, not a require of itself.
-  return moduleText(out.lines, './', true)
+  if views then
+    table.insert(out, 'local Empties, Metas = Array.empty, Array.metas')
+  elseif uses 'Empties' then
+    table.insert(out, 'local Empties = require(\'../../array\').empty')
+  end
+
+  for _, line in tables do
+    local wrapped = Layout.wrap(line, 0)
+    -- A table that takes several lines is a paragraph of its own.
+    if #wrapped > 1 and out[#out] ~= '' then table.insert(out, '') end
+
+    table.move(wrapped, 1, #wrapped, #out + 1, out)
+    if #wrapped > 1 then table.insert(out, '') end
+  end
+
+  if out[#out] ~= '' then table.insert(out, '') end
+
+  table.move(body, 1, #body, #out + 1, out)
+  return table.concat(out, '\n') .. '\n'
+end
+
+--- One struct's module: its reader, its default, and, for a struct of fixed-size fields, the
+--- constructor that reads one row of a list of them.
+local function structModule(name: string): string
+  local definition = Schema.structs[name]
+  local out: Out = { lines = {}, depth = 0 }
+  emitReader(
+    out,
+    'local function read(stream: Stream.Stream, cursor: number): (any, number)',
+    definition,
+    false,
+    false
+  )
+  emit(out, '')
+  local parts, seen = {}, {}
+  for _, step in flatten(definition, false) do
+    local field = step[1]
+    if
+      not field
+      or seen[field]
+      or string.sub(field, 1, 1) == '_'
+      or string.find(field, '.', 1, true)
+    then
+      continue
+    end
+
+    seen[field] = true
+    table.insert(parts, `{field} = {default(step)}`)
+  end
+
+  -- The reader is read-only, so a struct's default is one frozen table, made when first used.
+  emit(out, 'local shared')
+  emit(out, '')
+  open(out, 'local function default(): any')
+  emit(out, 'if shared then return shared end')
+  emit(out, '')
+  emit(out, `shared = table.freeze(\{ {table.concat(parts, ', ')} })`)
+  emit(out, 'return shared')
+  close(out)
+  local exports = 'read = read, default = default'
+  local inline = inlineStruct(name)
+  if inline then
+    emit(out, '')
+    oneLine(out, 'local function rows(bytes: buffer, cursor: number): any', `return {inline}`)
+    exports ..= ', rows = rows'
+  end
+
+  emit(out, '')
+  emit(out, `return table.freeze \{ {exports} }`)
+  return moduleText(out.lines, './')
 end
 
 local function recordModule(class: string): string
@@ -974,7 +1003,7 @@ local function recordModule(class: string): string
   emitCheck(out, definition)
   emit(out, '')
   emit(out, 'return table.freeze { read = read, check = check }')
-  return moduleText(out.lines, '../')
+  return moduleText(out.lines, '../structs/')
 end
 
 local concrete = {}
@@ -982,8 +1011,26 @@ for _, entry in Classes.factory do
   concrete[entry[1]] = true
 end
 
+--- Writes `texts`, by module name, as the modules of `folder`, and removes any other file there.
+local function writeModules(folder: string, texts: { [string]: string })
+  if not jess.fs.isDir(folder) then jess.fs.createDir(folder) end
+
+  for name, text in texts do
+    jess.fs.write(jess.fs.join(folder, `{name}.luau`), text)
+  end
+
+  for _, file in jess.fs.list(folder) do
+    if not texts[string.sub(file, 1, -6)] then jess.fs.remove(jess.fs.join(folder, file)) end
+  end
+end
+
+local structs: { [string]: string } = {}
+for _, name in sorted(Schema.structs) do
+  structs[name] = structModule(name)
+end
+
+writeModules(jess.fs.join(outDir, 'structs'), structs)
 local written, missing = 0, {}
-jess.fs.write(jess.fs.join(outDir, 'structs.luau'), structsModule())
 for _, class in sorted(concrete) do
   if not Schema.classes[class] then
     table.insert(missing, class)
@@ -1037,4 +1084,4 @@ do
 end
 
 jess.fs.write(jess.fs.join(outDir, 'load.luau'), table.concat(load, '\n') .. '\n')
-print(`wrote structs, load, and {written} record classes; {#missing} classes have no schema yet`)
+print(`wrote structs/, load, and {written} record classes; {#missing} classes have no schema yet`)
