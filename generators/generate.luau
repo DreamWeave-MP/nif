@@ -1992,17 +1992,18 @@ local function writeValue(value: ArrayValue): { string }
   return written
 end
 
-local function arrayAccess(): string
+--- One array kind's `get`, `set`, and `toTable`, a module of its own.
+local function arrayKindModule(kind: ArrayKind): string
   local out: Out = { lines = {}, depth = 0, pending = false }
   lines(out, {
     '--!strict',
     '--!native',
     '-- SPDX-License-Identifier: MIT OR Apache-2.0',
     Generated,
-    '-- What an array does beyond being read in place: `get`, `set`, and `toTable` for each kind,',
-    '-- loaded by `array.luau` the first time an array is asked for one.',
+    `-- What an array of kind \`{kind.kind}\` does beyond being read in place, loaded the first time one`,
+    '-- is asked for a method (`array_access.luau`).',
     '',
-    'local Types = require \'./array_types\'',
+    'local Types = require \'../array_types\'',
     '',
     'type ArrayFields = Types.ArrayFields',
     '',
@@ -2029,68 +2030,106 @@ local function arrayAccess(): string
     'end',
     '',
   })
-  local entries = {}
-  for _, kind in Schema.ArrayKinds do
-    local name, typeName = kind.type, `Types.{kind.type}`
-    local returns, params, reads = {}, {}, {}
-    for _, value in kind.values do
-      table.insert(returns, value.type)
-      table.insert(params, `{parameter(value)}: {value.type}`)
-      table.insert(reads, readValue(value))
-    end
-
-    local result = if #returns == 1 then returns[1] else `({table.concat(returns, ', ')})`
-    open(out, `local {name}: Methods = \{`)
-    emit(out, `kind = '{kind.kind}',`)
-    close(out, '}')
-    open(out, `function {name}.get(array: {typeName}, index: number): {result}`)
-    emit(out, 'local bytes, cursor = array.buffer, at(array, index)')
-    spaced(out, `return {table.concat(reads, ', ')}`)
-    close(out)
-    open(out, `function {name}.set(array: {typeName}, index: number, {table.concat(params, ', ')})`)
-    emit(out, 'own(array)')
-    emit(out, 'local bytes, cursor = array.buffer, at(array, index)')
-    for _, value in kind.values do
-      for _, line in writeValue(value) do
-        emit(out, line)
-      end
-    end
-
-    close(out)
-    open(out, `function {name}.toTable(array: {typeName}): \{ {elementType(kind)} }`)
-    emit(out, `local list = table.create(array.count) :: \{ {elementType(kind)} }`)
-    emit(out, 'local bytes = array.buffer')
-    open(out, 'for index = 1, array.count do')
-    emit(out, 'local cursor = array.offset + (index - 1) * array.stride')
-    if kind.shape == 'value' then
-      emit(out, `list[index] = {reads[1]}`)
-    elseif kind.shape == 'list' then
-      spaced(out, `list[index] = \{ {table.concat(reads, ', ')} }`)
-    else
-      local parts, group = {}, {}
-      for position, value in kind.values do
-        if kind.shape == 'grouped' and Groups[value.name] then
-          table.insert(group, reads[position])
-        else
-          table.insert(parts, `{value.name} = {reads[position]}`)
-        end
-      end
-
-      if #group > 0 then table.insert(parts, 2, `value = \{ {table.concat(group, ', ')} }`) end
-
-      spaced(out, `list[index] = \{ {table.concat(parts, ', ')} }`)
-    end
-
-    close(out)
-    blank(out)
-    emit(out, 'return list')
-    close(out)
-    table.insert(entries, `{kind.kind} = {name}`)
+  local name, typeName = kind.type, `Types.{kind.type}`
+  local returns, params, reads = {}, {}, {}
+  for _, value in kind.values do
+    table.insert(returns, value.type)
+    table.insert(params, `{parameter(value)}: {value.type}`)
+    table.insert(reads, readValue(value))
   end
 
+  local result = if #returns == 1 then returns[1] else `({table.concat(returns, ', ')})`
+  open(out, `local {name}: Methods = \{`)
+  emit(out, `kind = '{kind.kind}',`)
+  close(out, '}')
+  open(out, `function {name}.get(array: {typeName}, index: number): {result}`)
+  emit(out, 'local bytes, cursor = array.buffer, at(array, index)')
+  spaced(out, `return {table.concat(reads, ', ')}`)
+  close(out)
+  open(out, `function {name}.set(array: {typeName}, index: number, {table.concat(params, ', ')})`)
+  emit(out, 'own(array)')
+  emit(out, 'local bytes, cursor = array.buffer, at(array, index)')
+  for _, value in kind.values do
+    for _, line in writeValue(value) do
+      emit(out, line)
+    end
+  end
+
+  close(out)
+  open(out, `function {name}.toTable(array: {typeName}): \{ {elementType(kind)} }`)
+  emit(out, `local list = table.create(array.count) :: \{ {elementType(kind)} }`)
+  emit(out, 'local bytes = array.buffer')
+  open(out, 'for index = 1, array.count do')
+  emit(out, 'local cursor = array.offset + (index - 1) * array.stride')
+  if kind.shape == 'value' then
+    emit(out, `list[index] = {reads[1]}`)
+  elseif kind.shape == 'list' then
+    spaced(out, `list[index] = \{ {table.concat(reads, ', ')} }`)
+  else
+    local parts, group = {}, {}
+    for position, value in kind.values do
+      if kind.shape == 'grouped' and Groups[value.name] then
+        table.insert(group, reads[position])
+      else
+        table.insert(parts, `{value.name} = {reads[position]}`)
+      end
+    end
+
+    if #group > 0 then table.insert(parts, 2, `value = \{ {table.concat(group, ', ')} }`) end
+
+    spaced(out, `list[index] = \{ {table.concat(parts, ', ')} }`)
+  end
+
+  close(out)
+  blank(out)
+  emit(out, 'return list')
+  close(out)
+  blank(out)
+  emit(out, `return table.freeze({name})`)
+  return table.concat(out.lines, '\n') .. '\n'
+end
+
+--- Each kind's methods for `array.luau`: its name, and the module of the rest (`arrays/`),
+--- required the first time one of them is asked for.
+local function arrayAccess(): string
+  local out: Out = { lines = {}, depth = 0, pending = false }
+  lines(out, {
+    '--!strict',
+    '--!native',
+    '-- SPDX-License-Identifier: MIT OR Apache-2.0',
+    Generated,
+    '-- What an array does beyond being read in place: `get`, `set`, and `toTable` for each kind.',
+    '-- `array.luau` loads this the first time an array is asked for anything it doesn\'t hold; a',
+    '-- kind\'s methods are a module of their own in `arrays/`, loaded the first time one is called.',
+    '',
+    'local Types = require \'./array_types\'',
+    '',
+    '--- A kind\'s name and methods.',
+    'type Methods = { [string]: unknown }',
+    '',
+    '--- A kind\'s methods before its module has loaded: its name, and a metatable that requires',
+    '--- the rest the first time one is asked for, and then goes. Anything else asked of an array',
+    '--- that it doesn\'t hold (`owned`, of a view) is nothing, and loads nothing.',
+    'local function lazy(kind: Types.Kind, load: () -> Methods): Methods',
+    '  local methods: Methods = { kind = kind }',
+    '  local meta = {}',
+    '',
+    '  function meta.__index(_: Methods, name: string): unknown',
+    '    if name ~= \'get\' and name ~= \'set\' and name ~= \'toTable\' then return nil end',
+    '',
+    '    local loaded = load()',
+    '    methods.get, methods.set, methods.toTable = loaded.get, loaded.set, loaded.toTable',
+    '    setmetatable(methods, nil)',
+    '    return methods[name]',
+    '  end',
+    '',
+    '  return setmetatable(methods, meta)',
+    'end',
+    '',
+  })
   open(out, 'local Kinds: { [Types.Kind]: Methods } = {')
-  for _, entry in entries do
-    emit(out, `{entry},`)
+  for _, kind in Schema.ArrayKinds do
+    emit(out, `{kind.kind} = lazy('{kind.kind}', function() return require './arrays/{kind.kind}' end),`)
   end
 
   close(out, '}')
@@ -2196,8 +2235,23 @@ jess.fs.write(jess.fs.join(outDir, 'codec.luau'), codecHelperModule())
 jess.fs.write(jess.fs.join(outDir, 'enums.luau'), enums())
 jess.fs.write(jess.fs.join(outDir, 'array_types.luau'), arrayTypes())
 jess.fs.write(jess.fs.join(outDir, 'array_access.luau'), arrayAccess())
+
+local arraysDir = jess.fs.join(outDir, 'arrays')
+local arrays: { [string]: boolean } = {}
+if not jess.fs.isDir(arraysDir) then jess.fs.createDir(arraysDir) end
+
+for _, kind in Schema.ArrayKinds do
+  local file = `{kind.kind}.luau`
+  arrays[file] = true
+  jess.fs.write(jess.fs.join(arraysDir, file), arrayKindModule(kind))
+end
+
+for _, file in jess.fs.list(arraysDir) do
+  if not arrays[file] then jess.fs.remove(jess.fs.join(arraysDir, file)) end
+end
+
 jess.fs.write(jess.fs.join(outDir, 'types.luau'), types())
 print(
   'wrote scan, structs, struct_writes, stash, load, codec, enums, types, array_types,'
-    .. ` array_access, records/, fills/, and writes/ in {outDir}`
+    .. ` array_access, arrays/, records/, fills/, and writes/ in {outDir}`
 )
