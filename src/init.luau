@@ -142,8 +142,14 @@ end
 local function reachable(state: Nif): ({ boolean }, { boolean })
   local {count, decoded, links: scanned, linkEnds} = state
   local keep, dangling = table.create(count, false), table.create(count, false)
-  local stack = [for root in state.roots if root >= 0 => root + 1]
-  local top, scratch = #stack, {}
+  local stack, top, scratch = {}, 0, {}
+  for _, root in state.roots do
+    if root >= 0 then
+      top += 1
+      stack[top] = root + 1
+    end
+  end
+
   while top > 0 do
     local slot = stack[top]
     top -= 1
@@ -339,7 +345,12 @@ function Nif.remove(self: Nif, index: number): boolean
   if slot < 1 or slot > self.count or self.removed[slot] then return false end
 
   self.removed[slot], self.decoded[slot] = true, nil
-  self.roots = [for root in self.roots if root ~= index => root]
+  local roots = {}
+  for _, root in self.roots do
+    if root ~= index then table.insert(roots, root) end
+  end
+
+  self.roots = roots
   return true
 end
 
@@ -388,7 +399,11 @@ function Nif.detach(self: Nif, parent: number, child: number): boolean
   local node = record(self, parent) :: any
   if not node or not Array.isArray(node.children) then error(`record {parent} isn't a node`, 0) end
 
-  local kept = [for index in node.children:toTable() if index ~= child => index]
+  local kept = {}
+  for _, index in node.children:toTable() do
+    if index ~= child then table.insert(kept, index) end
+  end
+
   if #kept == node.children.count then return false end
 
   node.children = edit().toArray('i32', kept)
@@ -577,7 +592,14 @@ end
 
 --- How many records a save keeps: those reachable from the roots.
 function Nif.reachableCount(self: Nif): number
-  return #[for kept in (reachable(self)) if kept => kept]
+  local count = 0
+  for _, kept in (reachable(self)) do
+    if kept then
+      count += 1
+    end
+  end
+
+  return count
 end
 
 --- The file's bytes after any edits.
