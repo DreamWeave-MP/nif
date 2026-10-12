@@ -39,7 +39,11 @@ end
 --- A key union's scanner: `strides` holds each key type's size; `always` says the kind is stored
 --- even with no keys.
 local function keyUnion(kinds: { Array.Kind }, always: boolean?)
-  local strides = [for arrayKind in kinds => Array.strides[arrayKind]]
+  local strides = {}
+  for kind, arrayKind in kinds do
+    strides[kind] = Array.strides[arrayKind]
+  end
+
   return function(bytes: buffer, cursor: number, _links: Links, linkCount: number): (number, number)
     local count = buffer.readu32(bytes, cursor)
     if count == 0 then return if always then cursor + 8 else cursor + 4, linkCount end
