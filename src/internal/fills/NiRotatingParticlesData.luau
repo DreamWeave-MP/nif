@@ -5,15 +5,12 @@
 
 local Array = require '../array'
 local Custom = require '../custom'
-local Structs = require '../structs'
+local Stash = require '../stash'
 local Types = require '../types'
 
 type Record = Types.Record
 
 local Metas, Empties = Array.metas, Array.empty
---- Values one field leaves for a later one, read by an expression; shared, since a
---- struct reads what its record left.
-local Stash = Structs.stash
 
 local function fill(bytes: buffer, cursor: number, typeName: string, into: Record): number
   local _numVertices = buffer.readu16(bytes, cursor)

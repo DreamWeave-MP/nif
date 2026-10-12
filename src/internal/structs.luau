@@ -5,25 +5,16 @@
 
 local Array = require './array'
 local Custom = require './custom'
+local Stash = require './stash'
 local Text = require './text'
 local Types = require './types'
-local Writer = require './writer'
-
-type Links = { number }
-type Map = { [number]: number }
-type Writer = Writer.Writer
 
 local Metas, Empties = Array.metas, Array.empty
 local Identity = Custom.identity
 local Spellings: dream_intern_Pool = Text.pool
 local Strings = Text.decoded
---- Values one field leaves for a later one, read by an expression; shared, since a
---- struct reads what its record left.
-local Stash = {}
 
 local ReadStruct = {}
-local WriteStruct = {}
-local StructLinks = {}
 
 function ReadStruct.BoneData(bytes: buffer, cursor: number): (Types.BoneData, number)
   local rotation = Identity
@@ -101,86 +92,11 @@ function ReadStruct.BoneData(bytes: buffer, cursor: number): (Types.BoneData, nu
   }, cursor
 end
 
-function WriteStruct.BoneData(writer: Writer, struct: Types.BoneData, map: Map)
-  local bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity
-
-  if cursor + 68 > capacity then
-    writer.cursor = cursor
-    Writer.reserve(writer, 68)
-    bytes, capacity = writer.bytes, writer.capacity
-  end
-
-  local rotation = struct.rotation
-  local rotation1: vector = rotation[1]
-  rotation1:writef32x3(bytes, cursor)
-  local rotation2: vector = rotation[2]
-  rotation2:writef32x3(bytes, cursor + 12)
-  local rotation3: vector = rotation[3]
-  rotation3:writef32x3(bytes, cursor + 24)
-
-  if rotation1 ~= rotation1 or rotation2 ~= rotation2 or rotation3 ~= rotation3 then
-    writer.nan = true
-  end
-
-  local translation: vector = struct.translation
-  translation:writef32x3(bytes, cursor + 36)
-  if translation ~= translation then writer.nan = true end
-  local scale = struct.scale
-  buffer.writef32(bytes, cursor + 48, scale)
-  if scale ~= scale then writer.nan = true end
-  local bound = struct.bound
-  local boundCenter: vector = bound.center
-  boundCenter:writef32x3(bytes, cursor + 52)
-  if boundCenter ~= boundCenter then writer.nan = true end
-  local boundRadius = bound.radius
-  buffer.writef32(bytes, cursor + 64, boundRadius)
-  if boundRadius ~= boundRadius then writer.nan = true end
-  cursor += 68
-
-  do
-    local values = struct.vertexWeights
-    local length = values.count * values.stride
-
-    if cursor + 2 + length > capacity then
-      writer.cursor = cursor
-      Writer.reserve(writer, 2 + length)
-      bytes, capacity = writer.bytes, writer.capacity
-    end
-
-    buffer.writeu16(bytes, cursor, values.count)
-    cursor += 2
-    buffer.copy(bytes, cursor, values.buffer, values.offset, length)
-    cursor += length
-  end
-
-  writer.cursor = cursor
-
-  return
-end
-
-function StructLinks.BoneData(struct: Types.BoneData, links: Links, linkCount: number): number
-  return linkCount
-end
-
 function ReadStruct.FloatData(bytes: buffer, cursor: number): (Types.FloatData, number)
   local keys
   keys, cursor = Custom.floatKeys.read(bytes, cursor)
 
   return { keys = keys }, cursor
-end
-
-function WriteStruct.FloatData(writer: Writer, struct: Types.FloatData, map: Map)
-  local cursor = writer.cursor
-  writer.cursor = cursor
-  Custom.floatKeys.write(writer, struct.keys, map)
-  cursor = writer.cursor
-  writer.cursor = cursor
-
-  return
-end
-
-function StructLinks.FloatData(struct: Types.FloatData, links: Links, linkCount: number): number
-  return linkCount
 end
 
 function ReadStruct.MorphTarget(bytes: buffer, cursor: number): (Types.MorphTarget, number)
@@ -200,35 +116,6 @@ function ReadStruct.MorphTarget(bytes: buffer, cursor: number): (Types.MorphTarg
   end
 
   return { keys = keys, vertices = vertices }, cursor
-end
-
-function WriteStruct.MorphTarget(writer: Writer, struct: Types.MorphTarget, map: Map)
-  local bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity
-  writer.cursor = cursor
-  Custom.morphKeys.write(writer, struct.keys, map)
-  bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity
-
-  do
-    local values = struct.vertices
-    local length = values.count * values.stride
-
-    if cursor + 0 + length > capacity then
-      writer.cursor = cursor
-      Writer.reserve(writer, 0 + length)
-      bytes, capacity = writer.bytes, writer.capacity
-    end
-
-    buffer.copy(bytes, cursor, values.buffer, values.offset, length)
-    cursor += length
-  end
-
-  writer.cursor = cursor
-
-  return
-end
-
-function StructLinks.MorphTarget(struct: Types.MorphTarget, links: Links, linkCount: number): number
-  return linkCount
 end
 
 function ReadStruct.NiSequence(bytes: buffer, cursor: number): (Types.NiSequence, number)
@@ -255,39 +142,6 @@ function ReadStruct.NiSequence(bytes: buffer, cursor: number): (Types.NiSequence
   }, cursor
 end
 
-function WriteStruct.NiSequence(writer: Writer, struct: Types.NiSequence, map: Map)
-  local bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity
-
-  do
-    local text = Text.encode(struct.sequenceName)
-    local length = #text
-
-    if cursor + 4 + length > capacity then
-      writer.cursor = cursor
-      Writer.reserve(writer, 4 + length)
-      bytes, capacity = writer.bytes, writer.capacity
-    end
-
-    buffer.writeu32(bytes, cursor, length)
-    buffer.writestring(bytes, cursor + 4, text)
-    cursor += 4 + length
-  end
-
-  writer.cursor = cursor
-  Custom.sequenceTarget.write(writer, struct.sequenceTarget, map)
-  bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity
-  writer.cursor = cursor
-  Custom.nameControllerPairs.write(writer, struct.nameControllerPairs, map)
-  bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity
-  writer.cursor = cursor
-
-  return
-end
-
-function StructLinks.NiSequence(struct: Types.NiSequence, links: Links, linkCount: number): number
-  return linkCount
-end
-
 function ReadStruct.NiTextKey(bytes: buffer, cursor: number): (Types.NiTextKey, number)
   local time = buffer.readf32(bytes, cursor)
   cursor += 4
@@ -304,44 +158,6 @@ function ReadStruct.NiTextKey(bytes: buffer, cursor: number): (Types.NiTextKey, 
   cursor += 4 + valueLength
 
   return { time = time, value = value }, cursor
-end
-
-function WriteStruct.NiTextKey(writer: Writer, struct: Types.NiTextKey, map: Map)
-  local bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity
-
-  if cursor + 4 > capacity then
-    writer.cursor = cursor
-    Writer.reserve(writer, 4)
-    bytes, capacity = writer.bytes, writer.capacity
-  end
-
-  local time = struct.time
-  buffer.writef32(bytes, cursor, time)
-  if time ~= time then writer.nan = true end
-  cursor += 4
-
-  do
-    local text = Text.encode(struct.value)
-    local length = #text
-
-    if cursor + 4 + length > capacity then
-      writer.cursor = cursor
-      Writer.reserve(writer, 4 + length)
-      bytes, capacity = writer.bytes, writer.capacity
-    end
-
-    buffer.writeu32(bytes, cursor, length)
-    buffer.writestring(bytes, cursor + 4, text)
-    cursor += 4 + length
-  end
-
-  writer.cursor = cursor
-
-  return
-end
-
-function StructLinks.NiTextKey(struct: Types.NiTextKey, links: Links, linkCount: number): number
-  return linkCount
 end
 
 function ReadStruct.Partition(bytes: buffer, cursor: number): (Types.Partition, number)
@@ -454,159 +270,11 @@ function ReadStruct.Partition(bytes: buffer, cursor: number): (Types.Partition, 
   }, cursor
 end
 
-function WriteStruct.Partition(writer: Writer, struct: Types.Partition, map: Map)
-  local bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity
-
-  if cursor + 10 > capacity then
-    writer.cursor = cursor
-    Writer.reserve(writer, 10)
-    bytes, capacity = writer.bytes, writer.capacity
-  end
-
-  buffer.writeu16(bytes, cursor, struct.vertexIndices.count)
-  buffer.writeu16(bytes, cursor + 2, struct.triangles.count)
-  buffer.writeu16(bytes, cursor + 4, struct.bones.count)
-  buffer.writeu16(bytes, cursor + 6, struct.stripLengths.count)
-  buffer.writeu16(bytes, cursor + 8, struct.numBonesPerVertex)
-  cursor += 10
-
-  do
-    local values = struct.bones
-    local length = values.count * values.stride
-
-    if cursor + 0 + length > capacity then
-      writer.cursor = cursor
-      Writer.reserve(writer, 0 + length)
-      bytes, capacity = writer.bytes, writer.capacity
-    end
-
-    buffer.copy(bytes, cursor, values.buffer, values.offset, length)
-    cursor += length
-  end
-
-  do
-    local values = struct.vertexIndices
-    local length = values.count * values.stride
-
-    if cursor + 0 + length > capacity then
-      writer.cursor = cursor
-      Writer.reserve(writer, 0 + length)
-      bytes, capacity = writer.bytes, writer.capacity
-    end
-
-    buffer.copy(bytes, cursor, values.buffer, values.offset, length)
-    cursor += length
-  end
-
-  do
-    local values = struct.weights
-    local length = values.count * values.stride
-
-    if cursor + 0 + length > capacity then
-      writer.cursor = cursor
-      Writer.reserve(writer, 0 + length)
-      bytes, capacity = writer.bytes, writer.capacity
-    end
-
-    buffer.copy(bytes, cursor, values.buffer, values.offset, length)
-    cursor += length
-  end
-
-  do
-    local values = struct.triangles
-    local length = values.count * values.stride
-
-    if cursor + 0 + length > capacity then
-      writer.cursor = cursor
-      Writer.reserve(writer, 0 + length)
-      bytes, capacity = writer.bytes, writer.capacity
-    end
-
-    buffer.copy(bytes, cursor, values.buffer, values.offset, length)
-    cursor += length
-  end
-
-  do
-    local values = struct.stripLengths
-    local length = values.count * values.stride
-
-    if cursor + 0 + length > capacity then
-      writer.cursor = cursor
-      Writer.reserve(writer, 0 + length)
-      bytes, capacity = writer.bytes, writer.capacity
-    end
-
-    buffer.copy(bytes, cursor, values.buffer, values.offset, length)
-    cursor += length
-  end
-
-  do
-    local values = struct.strips
-    local length = values.count * values.stride
-
-    if cursor + 0 + length > capacity then
-      writer.cursor = cursor
-      Writer.reserve(writer, 0 + length)
-      bytes, capacity = writer.bytes, writer.capacity
-    end
-
-    buffer.copy(bytes, cursor, values.buffer, values.offset, length)
-    cursor += length
-  end
-
-  if cursor + 1 > capacity then
-    writer.cursor = cursor
-    Writer.reserve(writer, 1)
-    bytes, capacity = writer.bytes, writer.capacity
-  end
-
-  buffer.writeu8(bytes, cursor, struct.bonePalette and 1 or 0)
-  cursor += 1
-
-  if struct.bonePalette ~= nil then
-    do
-      local values = struct.bonePalette
-      local length = values.count * values.stride
-
-      if cursor + 0 + length > capacity then
-        writer.cursor = cursor
-        Writer.reserve(writer, 0 + length)
-        bytes, capacity = writer.bytes, writer.capacity
-      end
-
-      buffer.copy(bytes, cursor, values.buffer, values.offset, length)
-      cursor += length
-    end
-  end
-
-  writer.cursor = cursor
-
-  return
-end
-
-function StructLinks.Partition(struct: Types.Partition, links: Links, linkCount: number): number
-  return linkCount
-end
-
 function ReadStruct.PosData(bytes: buffer, cursor: number): (Types.PosData, number)
   local keys
   keys, cursor = Custom.posKeys.read(bytes, cursor)
 
   return { keys = keys }, cursor
-end
-
-function WriteStruct.PosData(writer: Writer, struct: Types.PosData, map: Map)
-  local cursor = writer.cursor
-  writer.cursor = cursor
-  Custom.posKeys.write(writer, struct.keys, map)
-  cursor = writer.cursor
-  writer.cursor = cursor
-
-  return
-end
-
-function StructLinks.PosData(struct: Types.PosData, links: Links, linkCount: number): number
-  return linkCount
 end
 
 function ReadStruct.RotData(bytes: buffer, cursor: number): (Types.RotData, number)
@@ -616,18 +284,4 @@ function ReadStruct.RotData(bytes: buffer, cursor: number): (Types.RotData, numb
   return { keys = keys }, cursor
 end
 
-function WriteStruct.RotData(writer: Writer, struct: Types.RotData, map: Map)
-  local cursor = writer.cursor
-  writer.cursor = cursor
-  Custom.rotKeys.write(writer, struct.keys, map)
-  cursor = writer.cursor
-  writer.cursor = cursor
-
-  return
-end
-
-function StructLinks.RotData(struct: Types.RotData, links: Links, linkCount: number): number
-  return linkCount
-end
-
-return table.freeze { read = ReadStruct, write = WriteStruct, links = StructLinks, stash = Stash }
+return table.freeze { read = ReadStruct }

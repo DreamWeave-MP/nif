@@ -2,10 +2,10 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
 --[[
-Turns `schema.luau` into the codec modules under `nif/`: `scan.luau`, `structs.luau`, each
-record type's reader in `records/`, its `fill` in `fills/`, and its writer and link collector in
-`writes/`, `load.luau` and `codec.luau` to require those on first use, `enums.luau`, and
-`types.luau`:
+Turns `schema.luau` into the codec modules under `nif/`: `scan.luau`, the structs' readers in
+`structs.luau` and their writers in `struct_writes.luau`, each record type's reader in
+`records/`, its `fill` in `fills/`, and its writer and link collector in `writes/`, `load.luau`
+and `codec.luau` to require those on first use, `enums.luau`, and `types.luau`:
 
   jess run --capability filesystem.read --capability filesystem.write \
     generators/generate.luau src/internal
@@ -1236,7 +1236,9 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
     { 'Codec', 'codec' },
     { 'Custom', 'custom' },
     { 'Enums', 'enums' },
+    { 'Stash', 'stash' },
     { 'Structs', 'structs' },
+    { 'StructWrites', 'struct_writes' },
     { 'Text', 'text' },
     { 'Types', 'types' },
     { 'Writer', 'writer' },
@@ -1247,7 +1249,9 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
     Codec = uses 'Codec',
     Custom = uses 'Custom' or uses 'Identity',
     Enums = uses 'Names' or uses 'Values',
-    Structs = uses 'ReadStruct' or uses 'WriteStruct' or uses 'StructLinks' or uses 'Stash',
+    Stash = uses 'Stash',
+    Structs = uses 'ReadStruct',
+    StructWrites = uses 'WriteStruct' or uses 'StructLinks',
     Text = uses 'Spellings' or uses 'Text',
     Types = true,
     Writer = uses 'Writer',
@@ -1271,7 +1275,8 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
     if uses(alias[1]) then table.insert(out, `type {alias[1]} = {alias[2]}`) end
   end
 
-  table.insert(out, '')
+  if out[#out] ~= '' then table.insert(out, '') end
+
   if uses 'Names' and uses 'Values' then
     table.insert(out, 'local Names, Values = Enums.names, Enums.values')
   elseif uses 'Names' then
@@ -1289,15 +1294,6 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
     table.insert(out, 'local Strings = Text.decoded')
   end
 
-  if uses 'Stash' then
-    table.insert(
-      out,
-      '--- Values one field leaves for a later one, read by an expression; shared, since a'
-    )
-    table.insert(out, '--- struct reads what its record left.')
-    table.insert(out, 'local Stash = Structs.stash')
-  end
-
   for _, line in locals or {} do
     table.insert(out, line)
   end
@@ -1311,41 +1307,63 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
   return table.concat(out, '\n') .. '\n'
 end
 
---- The values records hold inside them, shared by the record modules.
-local function structsModule(): string
-  local out: Out = { lines = {}, depth = 0, pending = false }
-  lines(out, { 'local ReadStruct = {}', 'local WriteStruct = {}', 'local StructLinks = {}', '' })
+--- The values records hold inside them, shared by the record modules: their readers in one
+--- module, their writers and link collectors in another, which only a save loads.
+local function structsModules(): { read: string, write: string }
+  local read: Out = { lines = {}, depth = 0, pending = false }
+  local write: Out = { lines = {}, depth = 0, pending = false }
+  lines(read, { 'local ReadStruct = {}', '' })
+  lines(write, { 'local WriteStruct = {}', 'local StructLinks = {}', '' })
 
   for _, name in sortedKeys(Schema.Structs) do
     if Inline[name] then continue end
 
     local definition = Schema.Structs[name]
     checkNames(name, definition.fields)
-    open(out, `function ReadStruct.{name}(bytes: buffer, cursor: number): (Types.{name}, number)`)
-    emitRead(out, definition.fields, false)
-    close(out)
-    blank(out)
+    open(read, `function ReadStruct.{name}(bytes: buffer, cursor: number): (Types.{name}, number)`)
+    emitRead(read, definition.fields, false)
+    close(read)
+    blank(read)
     emitFunction(
-      out,
+      write,
       `function WriteStruct.{name}(writer: Writer, struct: Types.{name}, map: Map)`,
-      function() emitWrite(out, definition, 'struct') end,
+      function() emitWrite(write, definition, 'struct') end,
       'return'
     )
     emitFunction(
-      out,
+      write,
       `function StructLinks.{name}(struct: Types.{name}, links: Links, linkCount: number): number`,
-      function() emitLinks(out, definition, 'struct') end,
+      function() emitLinks(write, definition, 'struct') end,
       'return linkCount'
     )
   end
 
-  local exports = 'read = ReadStruct, write = WriteStruct, links = StructLinks, stash = Stash'
-  emit(out, `return table.freeze \{ {exports} }`)
-  local body = out.lines
-  -- The struct tables and the stash are this module's own, not `Structs`'.
-  local text = codecModule(body, './')
-  text = string.gsub(text, 'local Stash = Structs.stash', 'local Stash = {}')
-  return (string.gsub(text, 'local Structs = require \'./structs\'\n', ''))
+  emit(read, 'return table.freeze { read = ReadStruct }')
+  emit(write, 'return table.freeze { write = WriteStruct, links = StructLinks }')
+
+  -- The struct tables are each module's own, not a require of itself.
+  local reads = string.gsub(codecModule(read.lines, './'), 'local Structs = require [^\n]*\n', '')
+  local writes =
+    string.gsub(codecModule(write.lines, './'), 'local StructWrites = require [^\n]*\n', '')
+  return { read = reads, write = writes }
+end
+
+--- The values one field leaves for a later one that another function reads.
+local function stashModule(): string
+  local out: Out = { lines = {}, depth = 0, pending = false }
+  lines(out, {
+    '--!strict',
+    '--!native',
+    '-- SPDX-License-Identifier: MIT OR Apache-2.0',
+    Generated,
+    '',
+    '--- Values one field leaves for a later one, read by an expression; shared, since a struct',
+    '--- reads what its record left.',
+    'local Stash: { [string]: number } = {}',
+    '',
+    'return Stash',
+  })
+  return table.concat(out.lines, '\n') .. '\n'
 end
 
 --- What a record type's codec is made of (`codec.luau`): the reader, and the two modules it
@@ -1357,8 +1375,8 @@ local function recordModule(body: { string }): string
   local text = table.concat(body, '\n')
   local sources = {
     { 'ReadStruct', 'Structs.read' },
-    { 'WriteStruct', 'Structs.write' },
-    { 'StructLinks', 'Structs.links' },
+    { 'WriteStruct', 'StructWrites.write' },
+    { 'StructLinks', 'StructWrites.links' },
   }
 
   local locals, values = {}, {}
@@ -2169,7 +2187,10 @@ end
 
 jess.fs.write(jess.fs.join(outDir, 'classes.luau'), classesModule())
 jess.fs.write(jess.fs.join(outDir, 'scan.luau'), scanModule())
-jess.fs.write(jess.fs.join(outDir, 'structs.luau'), structsModule())
+local structs = structsModules()
+jess.fs.write(jess.fs.join(outDir, 'structs.luau'), structs.read)
+jess.fs.write(jess.fs.join(outDir, 'struct_writes.luau'), structs.write)
+jess.fs.write(jess.fs.join(outDir, 'stash.luau'), stashModule())
 jess.fs.write(jess.fs.join(outDir, 'load.luau'), loadModule())
 jess.fs.write(jess.fs.join(outDir, 'codec.luau'), codecHelperModule())
 jess.fs.write(jess.fs.join(outDir, 'enums.luau'), enums())
@@ -2177,6 +2198,6 @@ jess.fs.write(jess.fs.join(outDir, 'array_types.luau'), arrayTypes())
 jess.fs.write(jess.fs.join(outDir, 'array_access.luau'), arrayAccess())
 jess.fs.write(jess.fs.join(outDir, 'types.luau'), types())
 print(
-  'wrote scan, structs, load, codec, enums, types, array_types, array_access, records/, fills/,'
-    .. ` and writes/ in {outDir}`
+  'wrote scan, structs, struct_writes, stash, load, codec, enums, types, array_types,'
+    .. ` array_access, records/, fills/, and writes/ in {outDir}`
 )
