@@ -14,6 +14,11 @@ local Defaults = require './defaults'
 local Load = require './load'
 local Writer = require './writer'
 
+local dataPlane = require '@dream/data'
+
+--- One coordinate of every twelve-byte vertex, read by the data plane, a whole array in one call.
+local Coordinates: dream_data_Kind_f32 = dataPlane.f32(12)
+
 --- One rounding to 32 bits, for the scalar steps `vector` arithmetic doesn't already round.
 local Scratch = buffer.create(4)
 local function f32(value: number): number
@@ -209,36 +214,48 @@ local function vertices(data: any): { vector }
   return found
 end
 
---- A `vector`'s length in 32 bits: glam's `(x * x + y * y) + z * z`, then the square root.
-local function length(value: vector): number
+--- A `vector`'s squared length in 32 bits: glam's `(x * x + y * y) + z * z`.
+local function lengthSquared(value: vector): number
   local square = value * value
-  return f32(math.sqrt(f32(f32(square.x + square.y) + square.z)))
+  return f32(f32(square.x + square.y) + square.z)
 end
+
+--- A `vector`'s length in 32 bits: the square root of that.
+local function length(value: vector): number return f32(math.sqrt(lengthSquared(value))) end
 
 --- Sets a geometry data record's bound to the sphere around its vertices: centered between
 --- their extremes, out to the farthest (`NiGeometryData::update_bound`).
 local function updateBound(data: any)
-  local points = vertices(data)
-  if #points == 0 then
+  local list = data.vertices
+  local bytes, offset, count = list.buffer, list.offset, list.count
+  if count == 0 then
     data.bound = { center = vector.zero, radius = 0 }
     return
   end
 
-  local low, high = points[1], points[1]
-  for _, point in points do
-    low =
-      vector.create(math.min(low.x, point.x), math.min(low.y, point.y), math.min(low.z, point.z))
-    high =
-      vector.create(math.max(high.x, point.x), math.max(high.y, point.y), math.max(high.z, point.z))
+  -- Each coordinate's extremes as `math.min` and `math.max` find them going down the vertices:
+  -- the first of equals, and a NaN only when the first vertex has it.
+  local xLow = Coordinates:min(bytes, offset, count) :: number
+  local yLow = Coordinates:min(bytes, offset + 4, count) :: number
+  local zLow = Coordinates:min(bytes, offset + 8, count) :: number
+  local xHigh = Coordinates:max(bytes, offset, count) :: number
+  local yHigh = Coordinates:max(bytes, offset + 4, count) :: number
+  local zHigh = Coordinates:max(bytes, offset + 8, count) :: number
+  local center = (vector.create(xLow, yLow, zLow) + vector.create(xHigh, yHigh, zHigh)) * 0.5
+  -- The farthest vertex is the one whose squared distance is greatest, and its distance the
+  -- 32-bit square root of that: one root for the record, not one for each vertex.
+  local farthest = 0
+  for index = 0, count - 1 do
+    local cursor = offset + index * 12
+    local point = vector.create(
+      buffer.readf32(bytes, cursor),
+      buffer.readf32(bytes, cursor + 4),
+      buffer.readf32(bytes, cursor + 8)
+    )
+    farthest = math.max(farthest, lengthSquared(point - center))
   end
 
-  local center = (low + high) * 0.5
-  local radius = 0
-  for _, point in points do
-    radius = math.max(radius, length(point - center))
-  end
-
-  data.bound = { center = center, radius = radius }
+  data.bound = { center = center, radius = f32(math.sqrt(farthest)) }
 end
 
 --- Sets a geometry data record's normals to each vertex's average of the normals of the `count`
