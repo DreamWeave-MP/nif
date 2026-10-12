@@ -7,11 +7,16 @@ The NIF package, timed through its public modules on the suite's two files: open
 reading through one table, dumping, the array views' `get` and `toTable`, saving untouched and
 re-encoded, the checker, the scene, the tree, the fixes, and the multi-version reader:
 
-  jess run --capability filesystem.read --package . --package-path .. bench/bench.luau [filter]
+  jess run --capability filesystem.read --capability process.spawn --package . \
+    bench/bench.luau [filter] [jess binary]
 
 One line per workload, `name<TAB>seconds per call`: the median of seven batches of about a tenth
 of a second each. Every call's answer is compared with the one pinned here, so a path that stops
 doing its work fails instead of posting a time.
+
+Given the jess binary to start (and `process.spawn`), the cold workloads too: what one process
+pays for one file from its first `require` on, when compiling the modules it needs is most of
+the work. Each is the median of seven processes running `cold.luau`.
 ]]
 
 local check = require '@nif/check'
@@ -20,6 +25,7 @@ local gamebryo = require '@nif/gamebryo'
 local header = require '@nif/header'
 local info = require '@nif/info'
 local nif = require '@nif'
+local process = require '@dream/process'
 local scene = require '@nif/scene'
 local support = require '../tests/support'
 
@@ -29,8 +35,18 @@ if not jess.bench.verified then
   error('nif bench: this jess was built without the verified toolchain: measure on a release', 0)
 end
 
-local filter: string? = ...
+local filter: string?, binary: string? = ...
 local only = if filter and filter ~= '' then filter else nil
+
+--- Where this file is, from its chunk name: `cold.luau` is beside it, the package above it.
+local function here(): string
+  local source = debug.info(1, 's')
+  local first = string.sub(source, 1, 1)
+  local path = if first == '@' or first == '=' then string.sub(source, 2) else source
+  return string.match(path, '^(.*)/[^/]*$') or '.'
+end
+
+local Here = here()
 
 local function median(samples: { number }): number
   table.sort(samples)
@@ -61,6 +77,37 @@ local function workload(name: string, expected: number, body: () -> number)
     end
 
     samples[batch] = (os.clock() - start) / iterations
+  end
+
+  print(`{name}\t{string.format('%.9f', median(samples))}`)
+end
+
+--- Times `cold.luau`'s `kind` of work on the file at `path`, a process a sample.
+local function cold(name: string, expected: number, kind: string, path: string)
+  if not binary or (only and not string.find(name, only, 1, true)) then return end
+
+  local arguments = {
+    'run',
+    '--capability',
+    'filesystem.read',
+    '--package',
+    `{Here}/..`,
+    `{Here}/cold.luau`,
+    kind,
+    path,
+  }
+
+  local samples = {}
+  for run = 1, 7 do
+    local result, message = process.run(binary, arguments, { stdout = 'capture' })
+    if not result then error(`{name}: {message}`, 0) end
+
+    local answer, seconds = string.match(result.stdout or '', '^(%d+)\t([%d.]+)\n$')
+    if not result.success or tonumber(answer) ~= expected then
+      error(`{name}: answered {answer or result.stdout}, not {expected}`, 0)
+    end
+
+    samples[run] = tonumber(seconds) :: number
   end
 
   print(`{name}\t{string.format('%.9f', median(samples))}`)
@@ -281,8 +328,17 @@ local function file(name: string, expected: Expected)
     function(): number return header.parse(bytes).recordCount end
   )
 
+  local path = `{Here}/../tests/assets/{name}.nif`
+  cold(`{name} cold: open + decode`, expected.decode, 'decode', path)
+  cold(`{name} cold: read into one table a type`, expected.read, 'read', path)
+  cold(`{name} cold: open + decode + save`, expected.save, 'save', path)
+  cold(`{name} cold: check`, expected.check, 'check', path)
+  cold(`{name} cold: scene`, expected.scene, 'scene', path)
+
   local records = expected.gamebryo
   if not records then return end
+
+  cold(`{name} cold: multi-version open`, records, 'multi-version', path)
 
   workload(
     `{name} multi-version open`,
