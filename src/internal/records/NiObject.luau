@@ -8,7 +8,6 @@ local Types = require '../types'
 
 type Record = Types.Record
 
-
 local function read(bytes: buffer, cursor: number, typeName: string): (Record, number)
   return { type = typeName }, cursor
 end

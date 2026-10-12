@@ -11,7 +11,6 @@ type Links = { number }
 type Map = { [number]: number }
 type Writer = Writer.Writer
 
-
 local function write(writer: Writer, record: Record, map: Map) return end
 
 local function collectLinks(record: Record, links: Links, linkCount: number): number

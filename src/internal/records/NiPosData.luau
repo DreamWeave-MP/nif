@@ -9,7 +9,6 @@ local Types = require '../types'
 
 type Record = Types.Record
 
-
 local function read(bytes: buffer, cursor: number, typeName: string): (Record, number)
   local keys
   keys, cursor = Custom.posKeys.read(bytes, cursor)

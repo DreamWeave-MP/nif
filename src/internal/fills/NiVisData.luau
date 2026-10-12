@@ -7,7 +7,6 @@ local Types = require '../types'
 
 type Record = Types.Record
 
-
 local function fill(bytes: buffer, cursor: number, typeName: string, into: Record): number
   local keys
   local keysCount = buffer.readu32(bytes, cursor)

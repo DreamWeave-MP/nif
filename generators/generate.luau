@@ -1302,7 +1302,8 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
     table.insert(out, line)
   end
 
-  table.insert(out, '')
+  if out[#out] ~= '' then table.insert(out, '') end
+
   for _, line in body do
     table.insert(out, line)
   end

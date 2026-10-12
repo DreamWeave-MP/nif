@@ -12,7 +12,6 @@ type Links = { number }
 type Map = { [number]: number }
 type Writer = Writer.Writer
 
-
 local function write(writer: Writer, record: Record, map: Map)
   local cursor = writer.cursor
   writer.cursor = cursor

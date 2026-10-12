@@ -8,7 +8,6 @@ local Types = require '../types'
 
 type Record = Types.Record
 
-
 local function fill(bytes: buffer, cursor: number, typeName: string, into: Record): number
   local source
   source, cursor = Custom.textureSource.read(bytes, cursor)

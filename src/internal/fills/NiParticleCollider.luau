@@ -7,7 +7,6 @@ local Types = require '../types'
 
 type Record = Types.Record
 
-
 local function fill(bytes: buffer, cursor: number, typeName: string, into: Record): number
   local next = buffer.readi32(bytes, cursor)
   local controller = buffer.readi32(bytes, cursor + 4)

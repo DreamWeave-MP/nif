@@ -8,7 +8,6 @@ local Types = require '../types'
 
 type Record = Types.Record
 
-
 local function read(bytes: buffer, cursor: number, typeName: string): (Record, number)
   local next = buffer.readi32(bytes, cursor)
   local controller = buffer.readi32(bytes, cursor + 4)

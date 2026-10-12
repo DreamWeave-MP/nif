@@ -8,7 +8,6 @@ local Types = require '../types'
 
 type Record = Types.Record
 
-
 local function fill(bytes: buffer, cursor: number, typeName: string, into: Record): number
   local keys
   keys, cursor = Custom.rotKeys.read(bytes, cursor)
