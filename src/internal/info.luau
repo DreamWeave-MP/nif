@@ -131,13 +131,8 @@ local function sceneTree(nif: any): { TreeNode }
 
     if not is(data or -1, 'NiTriStripsData') then return 0 end
 
-    local total = 0
     local lengths = nif:record(data).stripLengths
-    for strip = 1, lengths.count do
-      total += math.max(lengths:get(strip) - 2, 0)
-    end
-
-    return total
+    return sum[for strip in range(1, lengths.count) => math.max(lengths:get(strip) - 2, 0)]
   end
 
   local function node(index: number, depth: number): TreeNode?
@@ -211,7 +206,7 @@ end
 
 --- The scene graph under each root of a file read by the multi-version reader.
 local function fileSceneTree(file: Reader.File): { TreeNode }
-  local records, classes, names = file.records, file.classes, file.names
+  local {records, classes, names} = file
   local seen: { [number]: boolean } = {}
 
   local function get(index: number, class: string): any
@@ -268,11 +263,7 @@ local function fileSceneTree(file: Reader.File): { TreeNode }
       }
     end
 
-    local found = {}
-    for _, index in net.extraList do
-      if index >= 0 then table.insert(found, describe(index)) end
-    end
-
+    local found = [for index in net.extraList if index >= 0 => describe(index)]
     local visited = {}
     local index = net.extra
     while index >= 0 do

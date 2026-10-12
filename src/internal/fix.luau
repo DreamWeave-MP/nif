@@ -118,9 +118,7 @@ local function fixRcn(nif: any, root: number, fixed: { Fixed })
   local direct = children(nif:record(root).children)
   if hasString(nif, root, 'RCN') then return end
 
-  for _, child in direct do
-    if is(nif, child, 'RootCollisionNode') then return end
-  end
+  if any[for child in direct => is(nif, child, 'RootCollisionNode')] then return end
 
   -- Is there a RootCollisionNode deeper down?
   local stack, seen = table.clone(direct), {}
@@ -211,12 +209,11 @@ local function fixSkinWeights(nif: any, fixed: { Fixed })
     local dropped = 0
     for _, bone in nif:record(data).boneData do
       local weights = bone.vertexWeights
-      local kept = {}
-      for entry = 0, weights.count - 1 do
-        if buffer.readu16(weights.buffer, weights.offset + entry * 6) < vertices then
-          table.insert(kept, entry)
-        end
-      end
+      local kept = [
+        for entry in range(0, weights.count - 1)
+        if buffer.readu16(weights.buffer, weights.offset + entry * 6) < vertices
+        => entry
+      ]
 
       if #kept == weights.count then continue end
 
@@ -255,11 +252,7 @@ local function fix(nif: any, kinds: { Kind }?): { Fixed }
   end
 
   local fixed: { Fixed } = {}
-  local roots = {}
-  for _, root in nif.roots do
-    if is(nif, root, 'NiNode') then table.insert(roots, root) end
-  end
-
+  local roots = [for root in nif.roots if is(nif, root, 'NiNode') => root]
   for _, root in roots do
     if wanted.ncc then fixNcc(nif, root, fixed) end
 

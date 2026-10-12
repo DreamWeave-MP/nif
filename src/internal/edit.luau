@@ -272,11 +272,8 @@ local function derive(record: any, fields: { [string]: any })
     and (fields.stripLengths or fields.strips)
     and fields.numTriangles == nil
   then
-    local count = 0
-    for strip = 1, record.stripLengths.count do
-      count += math.max(record.stripLengths:get(strip) - 2, 0)
-    end
-
+    local lengths = record.stripLengths
+    local count = sum[for strip in range(1, lengths.count) => math.max(lengths:get(strip) - 2, 0)]
     record.numTriangles = math.min(count, 0xFFFF)
   end
 
