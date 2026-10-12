@@ -14,6 +14,8 @@ allocating: a `vector` for two or three floats, several results for anything wid
 local Types = require './array_types'
 local Writer = require './writer'
 
+local dataPlane = require '@dream/data'
+
 type Writer = Writer.Writer
 
 export type Kind = Types.Kind
@@ -139,12 +141,12 @@ local function write(writer: Writer, array: ArrayFields)
   writer.cursor += length
 end
 
-local function sum(array: ArrayFields): number
-  local bytes, offset, total = array.buffer, array.offset, 0
-  for index = 0, array.count - 1 do
-    total += buffer.readu16(bytes, offset + index * 2)
-  end
+--- `u16`s side by side, read by the data plane, a whole array in one call.
+local Shorts: dream_data_Kind_u16 = dataPlane.u16()
 
+--- The sum of a `u16` array's elements.
+local function sum(array: ArrayFields): number
+  local total = Shorts:sum(array.buffer, array.offset, array.count)
   return total
 end
 
