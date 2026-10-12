@@ -1035,8 +1035,10 @@ local function emitWrite(out: Out, definition: Definition, subject: string)
     table.insert(values, `writer.{name}`)
   end
 
+  -- The writer's fields are taken by name: one of them as a plain local, several as a pattern.
   local take = `{list} = {table.concat(values, ', ')}`
-  body.lines[1] = `{string.rep('  ', out.depth)}local {take}`
+  local first = if #names > 1 then `\{{list}} = writer` else take
+  body.lines[1] = `{string.rep('  ', out.depth)}local {first}`
   for _, line in body.lines do
     local indent, code = string.match(line, '^(%s*)(.*)$')
     table.insert(out.lines, if code == Retake then indent .. take else line)

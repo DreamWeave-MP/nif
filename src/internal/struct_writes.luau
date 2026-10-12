@@ -16,7 +16,7 @@ local WriteStruct = {}
 local StructLinks = {}
 
 function WriteStruct.BoneData(writer: Writer, struct: Types.BoneData, map: Map)
-  local bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity
+  local {bytes, cursor, capacity} = writer
 
   if cursor + 68 > capacity then
     writer.cursor = cursor
@@ -91,7 +91,7 @@ function StructLinks.FloatData(struct: Types.FloatData, links: Links, linkCount:
 end
 
 function WriteStruct.MorphTarget(writer: Writer, struct: Types.MorphTarget, map: Map)
-  local bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity
+  local {bytes, cursor, capacity} = writer
   writer.cursor = cursor
   Custom.morphKeys.write(writer, struct.keys, map)
   bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity
@@ -120,7 +120,7 @@ function StructLinks.MorphTarget(struct: Types.MorphTarget, links: Links, linkCo
 end
 
 function WriteStruct.NiSequence(writer: Writer, struct: Types.NiSequence, map: Map)
-  local bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity
+  local {bytes, cursor, capacity} = writer
 
   do
     local text = Text.encode(struct.sequenceName)
@@ -153,7 +153,7 @@ function StructLinks.NiSequence(struct: Types.NiSequence, links: Links, linkCoun
 end
 
 function WriteStruct.NiTextKey(writer: Writer, struct: Types.NiTextKey, map: Map)
-  local bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity
+  local {bytes, cursor, capacity} = writer
 
   if cursor + 4 > capacity then
     writer.cursor = cursor
@@ -191,7 +191,7 @@ function StructLinks.NiTextKey(struct: Types.NiTextKey, links: Links, linkCount:
 end
 
 function WriteStruct.Partition(writer: Writer, struct: Types.Partition, map: Map)
-  local bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity
+  local {bytes, cursor, capacity} = writer
 
   if cursor + 10 > capacity then
     writer.cursor = cursor

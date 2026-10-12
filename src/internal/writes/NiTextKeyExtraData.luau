@@ -15,7 +15,7 @@ type Writer = Writer.Writer
 local WriteStruct = StructWrites.write
 
 local function write(writer: Writer, record: Record, map: Map)
-  local bytes, cursor, capacity = writer.bytes, writer.cursor, writer.capacity
+  local {bytes, cursor, capacity} = writer
 
   if cursor + 8 > capacity then
     writer.cursor = cursor
