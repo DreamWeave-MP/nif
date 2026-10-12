@@ -8,13 +8,26 @@ of its interpolation.
 ]]
 
 local Array = require '../array'
-local Fields = require './fields'
+local Enums = require '../enums'
 local Writer = require '../writer'
 
 type Writer = Writer.Writer
 type Map = { [number]: number }
 
-local {names: Names, values: Values, enumName, enumValue} = Fields
+local Names, Values = Enums.names, Enums.values
+
+local function enumName(names: { [number]: string }, value: number): string | number
+  return names[value] or value
+end
+
+local function enumValue(values: { [string]: number }, value: string | number): number
+  if type(value) == 'number' then return value end
+
+  local number = values[value]
+  if not number then error(`unknown enum value '{value}'`, 0) end
+
+  return number
+end
 
 --- An array, as far as these codecs need: its bytes and where they are.
 type View = Array.ArrayFields

@@ -11,10 +11,19 @@ have for the rest; their scanners are `custom_scan.luau`.
 
 The codecs are in `custom/`, by what they are for, and each of those modules is required the
 first time a record asks for one of its codecs: a module's functions are all compiled when it
-loads, and a mesh with no keys or textures never asks for theirs.
+loads, and a mesh with no keys or textures never asks for theirs. Each has its own copy of the
+few small reads and writes it calls, where the compiler can put them in line.
 ]]
 
-local Fields = require './custom/fields'
+--- An enum's number: the value itself, or the number its name stands for.
+local function enumValue(values: { [string]: number }, value: string | number): number
+  if type(value) == 'number' then return value end
+
+  local number = values[value]
+  if not number then error(`unknown enum value '{value}'`, 0) end
+
+  return number
+end
 
 --- The identity rotation, shared by every record that stores exactly it (the record modules test
 --- the bits): most do. Frozen, so edit a record's rotation by giving it a new table.
@@ -58,9 +67,9 @@ type Custom = typeof(require './custom/keys')
   & typeof(require './custom/textures')
   & typeof(require './custom/sequences')
   & typeof(require './custom/geometry')
-  & { identity: typeof(Identity), enumValue: typeof(Fields.enumValue) }
+  & { identity: typeof(Identity), enumValue: typeof(enumValue) }
 
-local Loaded: Part = { identity = Identity, enumValue = Fields.enumValue }
+local Loaded: Part = { identity = Identity, enumValue = enumValue }
 local Meta = {}
 
 --- A codec not asked for before: its module's codecs all go in the table, where the next read

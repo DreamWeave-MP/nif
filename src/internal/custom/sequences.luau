@@ -2,14 +2,31 @@
 --!native
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
-local Fields = require './fields'
+local Text = require '../text'
 local Types = require '../types'
 local Writer = require '../writer'
 
 type Writer = Writer.Writer
 type Map = { [number]: number }
 
-local readString = Fields.readString
+local Spellings: dream_intern_Pool = Text.pool
+local Strings = Text.decoded
+
+--- A u32 length and the bytes, cut at the first NUL the way OpenMW reads names. The whole field
+--- is interned (in native code), and cut and decoded once per spelling.
+local function readString(bytes: buffer, cursor: number): (string, number)
+  local length = buffer.readu32(bytes, cursor)
+  if length == 0 then return '', cursor + 4 end
+
+  local token = Spellings:intern(bytes, cursor + 4, length)
+  local text = Strings[token]
+  if not text then
+    text = Text.cut(bytes, cursor + 4, length)
+    Strings[token] = text
+  end
+
+  return text, cursor + 4 + length
+end
 
 -- A sequence's target: an external file name, or two numbers.
 local sequenceTarget = {}

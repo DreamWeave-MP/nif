@@ -2,14 +2,34 @@
 --!native
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
-local Fields = require './fields'
+local Enums = require '../enums'
 local Types = require '../types'
 local Writer = require '../writer'
 
 type Writer = Writer.Writer
 type Map = { [number]: number }
 
-local {names: Names, readVec3, writeF32, writeVec3} = Fields
+local Names = Enums.names
+
+local function readVec3(bytes: buffer, cursor: number): vector
+  return vector.create(
+    buffer.readf32(bytes, cursor),
+    buffer.readf32(bytes, cursor + 4),
+    buffer.readf32(bytes, cursor + 8)
+  )
+end
+
+--- Writes a float, flagging the writer when it is NaN (see `restoreNans` in `init.luau`).
+local function writeF32(writer: Writer, cursor: number, value: number)
+  buffer.writef32(writer.bytes, cursor, value)
+  if value ~= value then writer.nan = true end
+end
+
+local function writeVec3(writer: Writer, cursor: number, value: vector)
+  writeF32(writer, cursor, value.x)
+  writeF32(writer, cursor + 4, value.y)
+  writeF32(writer, cursor + 8, value.z)
+end
 
 -- Bounding volumes: a sphere, an oriented box, or a union of volumes.
 local boundingVolume = {}
