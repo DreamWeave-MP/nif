@@ -249,6 +249,55 @@ local SkyrimHeader = 'Gamebryo File Format, Version 20.2.0.7\n'
 
 local SkyrimFile = SkyrimHeader .. SkyrimNode .. u32(1) .. i32(0)
 
+--- A Skyrim SE file (stream 100) holding one `BSTriShape` named `Shape`, the root: `vertices`
+--- full-precision positions and nothing else to a vertex, and `indices` as its triangles, three
+--- to a triangle.
+local function skyrimSeShape(vertices: number, indices: { number }): string
+  local corners = table.concat([for index in indices => u16(index)])
+  -- The vertex description's flags are bits 44 to 55; 0x1 says a vertex has a position.
+  local body = u32(0)
+    .. u32(0)
+    .. i32(-1)
+    .. u32(14)
+    .. string.rep(f32(0), 3)
+    .. IdentityRows
+    .. f32(1)
+    .. i32(-1)
+    .. string.rep(f32(0), 4)
+    .. i32(-1)
+    .. i32(-1)
+    .. i32(-1)
+    .. u32(0)
+    .. u32(0x1000)
+    .. u16(#indices // 3)
+    .. u16(vertices)
+    .. u32(vertices * 16 + #corners)
+    .. string.rep(f32(1), vertices * 4)
+    .. corners
+    .. u32(0)
+
+  return 'Gamebryo File Format, Version 20.2.0.7\n'
+    .. u32(0x14020007)
+    .. u8(1)
+    .. u32(12)
+    .. u32(1)
+    .. u32(100)
+    .. short 'author\0'
+    .. short 'process\0'
+    .. short 'export\0'
+    .. u16(1)
+    .. sized 'BSTriShape'
+    .. u16(0)
+    .. u32(#body)
+    .. u32(1)
+    .. u32(5)
+    .. sized 'Shape'
+    .. u32(0)
+    .. body
+    .. u32(1)
+    .. i32(0)
+end
+
 --- The same node as Oblivion's 20.0.0.5 writes it, in a file without a Bethesda stream header:
 --- its name inline, 16-bit flags, and a property list.
 local OblivionNode = sized 'Scene Root'
@@ -2679,6 +2728,54 @@ suite.describe('@nif/check', function()
     }
 
     expect(findings('skinned.nif', skinned { weighted = { 0, 1, 2 } }).findings).toEqual {}
+  end)
+
+  suite.it('counts a Skyrim SE shape\'s triangles and names its first index past the vertices', function()
+    local report = findings('fits.nif', skyrimSeShape(3, { 0, 1, 2, 2, 1, 0 }))
+    expect(report.deep).toBe(true)
+    expect(report.findings).toEqual {}
+
+    local drawn = stats { records = 1, reachableRecords = 1, shapes = 1, vertices = 3, triangles = 2 }
+    expect(report.stats).toEqual(drawn)
+
+    -- The first index past the vertices as the triangles are drawn: not the highest, nor the
+    -- lowest.
+    report = findings('past.nif', skyrimSeShape(3, { 0, 1, 2, 2, 7, 5, 9, 0, 1 }))
+    expect(report.findings).toEqual {
+      {
+        severity = 'broken',
+        code = 'vertex_index_out_of_range',
+        message = '"Shape" uses vertex 7 of 3; this may crash OpenMW',
+        record = 0,
+      },
+    }
+
+    drawn.triangles = 3
+    expect(report.stats).toEqual(drawn)
+
+    -- The last index of the last triangle alone, one past the last vertex.
+    report = findings('last.nif', skyrimSeShape(3, { 0, 1, 2, 2, 1, 3 }))
+    expect(report.findings[1].message).toBe '"Shape" uses vertex 3 of 3; this may crash OpenMW'
+    drawn.triangles = 2
+    expect(report.stats).toEqual(drawn)
+
+    local undrawn = {
+      {
+        severity = 'info',
+        code = 'empty_geometry',
+        message = 'BSTriShape "Shape" has no triangles and isn\'t drawn',
+        record = 0,
+      },
+    }
+
+    report = findings('none.nif', skyrimSeShape(3, {}))
+    expect(report.findings).toEqual(undrawn)
+    expect(report.stats).toEqual(stats { records = 1, reachableRecords = 1 })
+
+    -- Triangles of no vertices aren't drawn, and none of their indices is named.
+    report = findings('vertices.nif', skyrimSeShape(0, { 0, 1, 2 }))
+    expect(report.findings).toEqual(undrawn)
+    expect(report.stats).toEqual(stats { records = 1, reachableRecords = 1 })
   end)
 
   suite.it('lists the textures a file names, as it spells them', function()
