@@ -6,25 +6,53 @@
 The values and checks the schema can't state as steps, one part per OpenMW header: each reader
 takes the stream and the position and returns the value and the position after it; each check
 takes the record, the records, their classes, and the record's index.
+
+A part is required the first time a record asks for a name no part before it holds: a module's
+functions are all compiled when it loads, and a Morrowind mesh never asks past the first two.
 ]]
 
-local custom = {}
-for _, part in
-  {
-    require './custom/node',
-    require './custom/property',
-    require './custom/extra',
-    require './custom/data',
-    require './custom/controller',
-    require './custom/physics',
-    require './custom/particle',
-  }
+--- The readers and checks one part holds, by name.
+type Part = { [string]: unknown }
 
-do
-  for name, value in part :: { [string]: any } do
-    assert(custom[name] == nil, `custom {name} is defined twice`)
-    custom[name] = value
+--- What requires each part, in the order a miss tries them: what nearly every file reads first.
+local Parts: { () -> Part } = table.freeze {
+  function(): Part return require './custom/node' end,
+  function(): Part return require './custom/data' end,
+  function(): Part return require './custom/property' end,
+  function(): Part return require './custom/extra' end,
+  function(): Part return require './custom/controller' end,
+  function(): Part return require './custom/physics' end,
+  function(): Part return require './custom/particle' end,
+}
+
+--- What the record modules see: every part's names, as though all were here.
+type Custom = typeof(require './custom/node')
+  & typeof(require './custom/data')
+  & typeof(require './custom/property')
+  & typeof(require './custom/extra')
+  & typeof(require './custom/controller')
+  & typeof(require './custom/physics')
+  & typeof(require './custom/particle')
+
+local Loaded: Part = {}
+local Meta = {}
+local required = 0
+
+--- A name not asked for before: the parts not yet required are, one at a time, until one holds
+--- it. Their names all go in the table, where the next read of any of them finds a plain field.
+function Meta.__index(loaded: Part, name: string): unknown
+  while required < #Parts do
+    required += 1
+    for key, value in Parts[required]() do
+      assert(rawget(loaded, key) == nil, `custom {key} is defined twice`)
+      loaded[key] = value
+    end
+
+    local found = rawget(loaded, name)
+    if found ~= nil then return found end
   end
+
+  return nil
 end
 
-return table.freeze(custom)
+return (setmetatable(Loaded, Meta) :: unknown) :: Custom
