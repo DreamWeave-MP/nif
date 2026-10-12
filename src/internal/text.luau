@@ -19,12 +19,10 @@ local intern = require '@dream/intern'
 
 local spellings: dream_intern_Pool = intern.new 'exact'
 
-
 --- Each token's text as a record holds it: cut at the first NUL and decoded from Windows-1252.
 --- A spelling with a NUL in it has the text before the NUL, so a reader can intern a field's
 --- whole span and cut it once per spelling, or intern the cut span; both find the same text.
 local Decoded: { string } = {}
-
 
 --- Text in records is Windows-1252, as OpenMW and jess-nif read it: the `length` bytes from
 --- `offset` in `source` as UTF-8. ASCII, nearly all of it, is as it is.

@@ -1352,7 +1352,6 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
 
   if uses 'Identity' then table.insert(out, 'local Identity = Custom.identity') end
 
-
   for _, line in locals or {} do
     table.insert(out, line)
   end

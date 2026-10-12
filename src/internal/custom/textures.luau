@@ -35,7 +35,6 @@ local function enumValue(values: { [string]: number }, value: string | number): 
   return number
 end
 
-
 local function readLink(bytes: buffer, cursor: number): number?
   local value = buffer.readi32(bytes, cursor)
   if value < 0 then return nil end
