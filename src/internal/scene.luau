@@ -337,6 +337,48 @@ local function slotMap(maps: any, slot: number): any
   return maps[TextureSlots[slot + 1]]
 end
 
+--- A run of a packed buffer: `length` bytes from `offset` in `source`, or, without a source, that
+--- many bytes of the `f32` `fill`.
+type Run = { source: buffer?, offset: number, fill: number, length: number }
+
+--- A packed buffer while its scene is built: the runs it will hold, in order, and where the next
+--- one starts. Nothing is copied until the scene is whole; then the buffer is made once, at its
+--- size, so no geometry is copied again as the buffer grows or is trimmed.
+type Packing = { runs: { Run }, cursor: number }
+
+local function packing(): Packing return { runs = {}, cursor = 0 } end
+
+--- Adds `length` bytes from `offset` in `source` to what `packed` will hold.
+local function take(packed: Packing, source: buffer, offset: number, length: number)
+  table.insert(packed.runs, { source = source, offset = offset, fill = 0, length = length })
+  packed.cursor += length
+end
+
+--- Adds `count` `f32`s of `value`.
+local function takeFill(packed: Packing, value: number, count: number)
+  table.insert(packed.runs, { offset = 0, fill = value, length = count * 4 })
+  packed.cursor += count * 4
+end
+
+--- The buffer `packed` describes.
+local function pack(packed: Packing): buffer
+  local out = buffer.create(packed.cursor)
+  local cursor = 0
+  for _, run in packed.runs do
+    local source, length = run.source, run.length
+    if source then
+      buffer.copy(out, cursor, source, run.offset, length)
+    elseif run.fill ~= 0 then
+      -- A new buffer is zeros already.
+      dataPlane.fill(out, 'f32', cursor, length // 4, run.fill)
+    end
+
+    cursor += length
+  end
+
+  return out
+end
+
 --- Translates the scene graph of `nif`, a Morrowind NIF `open` read, starting at its roots.
 --- Errors when the graph expands past `MaxSceneNodes` nodes; malformed links, cycles, and
 --- anything untranslated are `issues` instead.
@@ -344,9 +386,9 @@ local function build(nif: any): Scene
   local nodes: { SceneNode }, drawables: { Drawable }, geometries: { Geometry } = {}, {}, {}
   local materials: { Material }, textures: { Texture }, skins: { Skin } = {}, {}, {}
   local skinBones: { SkinBone }, issues: { Issue } = {}, {}
-  local positions, normals, colors, uvs =
-    Writer.new(1024), Writer.new(1024), Writer.new(1024), Writer.new(1024)
-  local indices, skinVertices, skinWeights = Writer.new(1024), Writer.new(256), Writer.new(256)
+  local positions, normals, colors, uvs, indices =
+    packing(), packing(), packing(), packing(), packing()
+  local skinVertices, skinWeights = Writer.new(256), Writer.new(256)
   local reported: { [string]: boolean } = {}
   local firstNode: { [number]: number } = {}
   local geometryBySource: { [number]: number | false } = {}
@@ -629,34 +671,17 @@ local function build(nif: any): Scene
 
     local firstVertex, firstIndex, firstUv =
       positions.cursor // 12, indices.cursor // 2, uvs.cursor // 8
-    local function copy(writer: Writer.Writer, view: any, length: number)
-      Writer.reserve(writer, length)
-      buffer.copy(writer.bytes, writer.cursor, view.buffer, view.offset, length)
-      writer.cursor += length
-    end
-
-    local function fill(writer: Writer.Writer, value: number, count: number)
-      Writer.reserve(writer, count * 4)
-      if value == 0 then
-        buffer.fill(writer.bytes, writer.cursor, 0, count * 4)
-      else
-        dataPlane.fill(writer.bytes, 'f32', writer.cursor, count, value)
-      end
-
-      writer.cursor += count * 4
-    end
-
-    copy(positions, vertices, vertexCount * 12)
+    take(positions, vertices.buffer, vertices.offset, vertexCount * 12)
     if hasNormals then
-      copy(normals, normalList, vertexCount * 12)
+      take(normals, normalList.buffer, normalList.offset, vertexCount * 12)
     else
-      fill(normals, 0, vertexCount * 3)
+      takeFill(normals, 0, vertexCount * 3)
     end
 
     if hasColors then
-      copy(colors, colorList, vertexCount * 16)
+      take(colors, colorList.buffer, colorList.offset, vertexCount * 16)
     else
-      fill(colors, 1, vertexCount * 4)
+      takeFill(colors, 1, vertexCount * 4)
     end
 
     -- The UV sets are one run of coordinates, set after set; only whole sets are kept.
@@ -664,14 +689,12 @@ local function build(nif: any): Scene
     for _, set in uvLists do
       if kept == 0 then break end
 
-      local take = math.min(set.count, kept)
-      copy(uvs, set, take * 8)
-      kept -= take
+      local whole = math.min(set.count, kept)
+      take(uvs, set.buffer, set.offset, whole * 8)
+      kept -= whole
     end
 
-    Writer.reserve(indices, triangleCount * 6)
-    buffer.copy(indices.bytes, indices.cursor, triangles, at, triangleCount * 6)
-    indices.cursor += triangleCount * 6
+    take(indices, triangles, at, triangleCount * 6)
 
     local index = #geometries
     local bound = data.bound
@@ -1181,11 +1204,11 @@ local function build(nif: any): Scene
     skins = skins,
     skinBones = skinBones,
     buffers = {
-      positions = Writer.finish(positions),
-      normals = Writer.finish(normals),
-      colors = Writer.finish(colors),
-      uvs = Writer.finish(uvs),
-      indices = Writer.finish(indices),
+      positions = pack(positions),
+      normals = pack(normals),
+      colors = pack(colors),
+      uvs = pack(uvs),
+      indices = pack(indices),
       skinVertices = Writer.finish(skinVertices),
       skinWeights = Writer.finish(skinWeights),
       vertexCount = positions.cursor // 12,
