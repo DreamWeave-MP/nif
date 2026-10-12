@@ -56,7 +56,7 @@ function custom.texturingMaps(
   cursor: number,
   readTexture: ReadTexture
 ): (any, number)
-  local bytes, version = stream.bytes, stream.version
+  local {bytes, version} = stream
   local maps = Maps
   maps.envMapLumaBias, maps.bumpMapMatrix, maps.parallaxOffset = vector.zero, Stream.zero4, 0
 

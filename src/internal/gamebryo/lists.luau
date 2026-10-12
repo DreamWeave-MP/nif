@@ -32,7 +32,7 @@ local function spansOf(lists: Lists): { number }
   local spans = lists.spans
   if spans then return spans end
 
-  local bytes, count, lengths = lists.buffer, lists.count, lists.lengths
+  local {buffer: bytes, count, lengths} = lists
   local made = table.create(count * 2) :: { number }
   local cursor = lists.start
   for index = 1, count do

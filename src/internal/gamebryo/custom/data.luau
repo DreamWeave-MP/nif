@@ -85,7 +85,7 @@ local function keyMap(
   tangents: boolean,
   morph: boolean?
 ): (KeyMap, number)
-  local bytes, version = stream.bytes, stream.version
+  local {bytes, version} = stream
   local map: KeyMap =
     { frameName = '', legacyWeight = 0, interpolationType = 0, keys = Stream.empty :: any }
   if morph then
@@ -193,7 +193,7 @@ end
 --- A `u16` count of lists, each a `u16` count of `u16`s: walked to its end, its lists indexed
 --- only when one is asked for.
 function custom.u16Lists(stream: Stream, cursor: number): (any, number)
-  local bytes, length = stream.bytes, stream.length
+  local {bytes, length} = stream
   local count = buffer.readu16(bytes, cursor)
   cursor += 2
   if count == 0 then return Stream.empty, cursor end

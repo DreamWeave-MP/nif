@@ -277,7 +277,7 @@ end
 function boundingVolume.write(writer: Writer, value: Types.BoundingVolume, map: Map)
   local data = value.boundData
   Writer.reserve(writer, 64)
-  local bytes, cursor = writer.bytes, writer.cursor
+  local {bytes, cursor} = writer
   local sphere, box, union = data.NiSphereBV, data.NiBoxBV, data.NiUnionBV
   if sphere then
     local bound = sphere.bound
@@ -360,7 +360,7 @@ end
 
 local function writeMap(writer: Writer, map: TextureMap, links: Map, bump: boolean)
   Writer.reserve(writer, 50)
-  local bytes, cursor = writer.bytes, writer.cursor
+  local {bytes, cursor} = writer
   buffer.writeu32(bytes, cursor, 1)
   buffer.writei32(bytes, cursor + 4, Writer.link(map.texture, links))
   buffer.writei32(bytes, cursor + 8, enumValue(Values.ClampMode, map.clampMode or 'WrapSWrapT'))
@@ -675,12 +675,7 @@ end
 type Geometry = { vertices: View, uvSets: { View } }
 
 local function uvSetTotal(record: Geometry): number
-  local total = 0
-  for _, coordinates in record.uvSets do
-    total += coordinates.count
-  end
-
-  return total
+  return sum[for coordinates in record.uvSets => coordinates.count]
 end
 
 --- How many sets the saved record says it has: the coordinates over the vertices.

@@ -69,7 +69,7 @@ end
 --- `NiGeomMorpherController`'s interpolators: a link list up to Oblivion (followed, in
 --- Bethesda's 10.2 files, by values OpenMW skips), then interpolator and weight pairs.
 function custom.morphInterpolators(stream: Stream, cursor: number): (any, number)
-  local bytes, version = stream.bytes, stream.version
+  local {bytes, version} = stream
   if version <= 0x14000005 then
     local interpolators
     interpolators, cursor = custom.ptrList(stream, cursor)
