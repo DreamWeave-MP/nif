@@ -12,7 +12,8 @@ have for the rest; their scanners are `custom_scan.luau`.
 The codecs are in `custom/`, by what they are for, and each of those modules is required the
 first time a record asks for one of its codecs: a module's functions are all compiled when it
 loads, and a mesh with no keys or textures never asks for theirs. Each has its own copy of the
-few small reads and writes it calls, where the compiler can put them in line.
+few small reads and writes it calls, where the compiler can put them in line; the string reader
+alone is shared (`custom/strings.luau`).
 ]]
 
 --- An enum's number: the value itself, or the number its name stands for.

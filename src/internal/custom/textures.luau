@@ -3,7 +3,7 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
 local Enums = require '../enums'
-local Text = require '../text'
+local Strings = require './strings'
 local Types = require '../types'
 local Writer = require '../writer'
 
@@ -12,8 +12,7 @@ type Map = { [number]: number }
 type Links = { number }
 
 local Names, Values = Enums.names, Enums.values
-local Spellings: dream_intern_Pool = Text.pool
-local Strings = Text.decoded
+local readString = Strings.read
 
 local function enumName(names: { [number]: string }, value: number): string | number
   return names[value] or value
@@ -28,21 +27,6 @@ local function enumValue(values: { [string]: number }, value: string | number): 
   return number
 end
 
---- A u32 length and the bytes, cut at the first NUL the way OpenMW reads names. The whole field
---- is interned (in native code), and cut and decoded once per spelling.
-local function readString(bytes: buffer, cursor: number): (string, number)
-  local length = buffer.readu32(bytes, cursor)
-  if length == 0 then return '', cursor + 4 end
-
-  local token = Spellings:intern(bytes, cursor + 4, length)
-  local text = Strings[token]
-  if not text then
-    text = Text.cut(bytes, cursor + 4, length)
-    Strings[token] = text
-  end
-
-  return text, cursor + 4 + length
-end
 
 local function readLink(bytes: buffer, cursor: number): number?
   local value = buffer.readi32(bytes, cursor)
