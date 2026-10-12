@@ -12,6 +12,7 @@ normals, computed with jess-nif's 32-bit arithmetic so a built file saves as jes
 local Array = require './array'
 local Defaults = require './defaults'
 local Load = require './load'
+local Writer = require './writer'
 
 --- One rounding to 32 bits, for the scalar steps `vector` arithmetic doesn't already round.
 local Scratch = buffer.create(4)
@@ -143,46 +144,52 @@ local function fromFields(fields: { [string]: any }): any
   return record
 end
 
---- The triangles a geometry data record draws, as index triples: its list, or its strips
---- unrolled with alternating winding and without degenerate triangles.
-local function triangles(data: any): { { number } }
-  local found = {}
+--- The triangles a geometry data record draws, as `u16` index triples: the buffer they are in,
+--- where they start, and how many. A triangle list's are the record's own bytes; strips are
+--- unrolled into a new buffer, with alternating winding and without degenerate triangles.
+local function triangles(data: any): (buffer, number, number)
   if data.type == 'NiTriShapeData' or data.type == 'NiTriShapeDynamicData' then
     local list = data.triangles
-    for index = 0, list.count - 1 do
-      local cursor = list.offset + index * 6
-      local bytes = list.buffer
-      table.insert(
-        found,
-        {
-          buffer.readu16(bytes, cursor),
-          buffer.readu16(bytes, cursor + 2),
-          buffer.readu16(bytes, cursor + 4),
-        }
-      )
-    end
-  elseif data.type == 'NiTriStripsData' then
-    local strips, lengths = data.strips, data.stripLengths
-    local point, total = 0, strips.count
-    for strip = 1, lengths.count do
-      local length = lengths:get(strip)
-      local available = math.max(0, math.min(length, total - point))
-      for step = 0, available - 3 do
-        local first, second, third =
-          strips:get(point + step + 1), strips:get(point + step + 2), strips:get(point + step + 3)
-        if first == second or second == third or first == third then continue end
-
-        table.insert(
-          found,
-          if step % 2 == 0 then { first, second, third } else { first, third, second }
-        )
-      end
-
-      point += length
-    end
+    return list.buffer, list.offset, list.count
   end
 
-  return found
+  local unrolled = Writer.new(64)
+  if data.type ~= 'NiTriStripsData' then return unrolled.bytes, 0, 0 end
+
+  local strips, lengths = data.strips, data.stripLengths
+  local source, from = strips.buffer, strips.offset
+  local point, total = 0, strips.count
+  for strip = 1, lengths.count do
+    local length = lengths:get(strip)
+    -- A strip longer than the points left has the points left.
+    local available = math.max(0, math.min(length, total - point))
+    -- Room for a triangle at every step: none is checked for as it is written.
+    Writer.reserve(unrolled, math.max(available - 2, 0) * 6)
+    local out, cursor = unrolled.bytes, unrolled.cursor
+    for step = 0, available - 3 do
+      local base = from + (point + step) * 2
+      local first = buffer.readu16(source, base)
+      local second = buffer.readu16(source, base + 2)
+      local third = buffer.readu16(source, base + 4)
+      if first == second or second == third or first == third then continue end
+
+      buffer.writeu16(out, cursor, first)
+      if step % 2 == 0 then
+        buffer.writeu16(out, cursor + 2, second)
+        buffer.writeu16(out, cursor + 4, third)
+      else
+        buffer.writeu16(out, cursor + 2, third)
+        buffer.writeu16(out, cursor + 4, second)
+      end
+
+      cursor += 6
+    end
+
+    unrolled.cursor = cursor
+    point += length
+  end
+
+  return unrolled.bytes, 0, unrolled.cursor // 6
 end
 
 --- The vertices of a geometry data record, as `vector`s.
@@ -234,34 +241,44 @@ local function updateBound(data: any)
   data.bound = { center = center, radius = radius }
 end
 
---- Sets a geometry data record's normals to each vertex's average of the normals of
---- `faces` around it, weighted by their area; a vertex no triangle uses gets a zero normal
---- (`NiGeometryData::compute_normals`).
-local function computeNormals(data: any, faces: { { number } })
+--- Sets a geometry data record's normals to each vertex's average of the normals of the `count`
+--- triangles around it (`u16` index triples from `offset` in `faces`), weighted by their area; a
+--- vertex no triangle uses gets a zero normal (`NiGeometryData::compute_normals`).
+local function computeNormals(data: any, faces: buffer, offset: number, count: number)
   local points = vertices(data)
   local sums = table.create(#points, vector.zero) :: { vector }
-  for _, face in faces do
-    local first, second, third = points[face[1] + 1], points[face[2] + 1], points[face[3] + 1]
+  for face = 0, count - 1 do
+    local cursor = offset + face * 6
+    local firstIndex, secondIndex, thirdIndex =
+      buffer.readu16(faces, cursor) + 1,
+      buffer.readu16(faces, cursor + 2) + 1,
+      buffer.readu16(faces, cursor + 4) + 1
+    local first, second, third = points[firstIndex], points[secondIndex], points[thirdIndex]
     if not first or not second or not third then continue end
 
     -- The cross product's length is twice the triangle's area, which does the weighting.
     local normal = vector.cross(second - first, third - first)
-    sums[face[1] + 1] += normal
-    sums[face[2] + 1] += normal
-    sums[face[3] + 1] += normal
+    sums[firstIndex] += normal
+    sums[secondIndex] += normal
+    sums[thirdIndex] += normal
   end
 
-  local normals = table.create(#points) :: { vector }
-  for index, sum in sums do
-    local reciprocal = f32(1 / length(sum))
-    normals[index] = if reciprocal == reciprocal
+  local normals = Array.new('vec3', #points)
+  local bytes = normals.buffer
+  for index, total in sums do
+    local reciprocal = f32(1 / length(total))
+    local normal = if reciprocal == reciprocal
         and reciprocal < math.huge
         and reciprocal > 0
-      then sum * reciprocal
+      then total * reciprocal
       else vector.zero
+    local cursor = (index - 1) * 12
+    buffer.writef32(bytes, cursor, normal.x)
+    buffer.writef32(bytes, cursor + 4, normal.y)
+    buffer.writef32(bytes, cursor + 8, normal.z)
   end
 
-  data.normals = toArray('vec3', normals)
+  data.normals = normals
 end
 
 --- What a new record derives from the fields a script set and didn't: a strip's triangle
@@ -282,10 +299,10 @@ local function derive(record: any, fields: { [string]: any })
   local verticesSet = fields.vertices ~= nil and record.vertices.count > 0
   if verticesSet and fields.bound == nil then updateBound(record) end
 
-  local faces = triangles(record)
-  local trianglesSet = (fields.triangles or fields.strips or fields.stripLengths) and #faces > 0
-  if (verticesSet or trianglesSet) and fields.normals == nil and #faces > 0 then
-    computeNormals(record, faces)
+  local faces, offset, count = triangles(record)
+  local trianglesSet = (fields.triangles or fields.strips or fields.stripLengths) and count > 0
+  if (verticesSet or trianglesSet) and fields.normals == nil and count > 0 then
+    computeNormals(record, faces, offset, count)
   end
 end
 
