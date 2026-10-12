@@ -16,10 +16,7 @@ local ReadStruct = {
 local DefaultStruct = { NiQuatTransform = NiQuatTransform.default }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local bytes, version, userVersion, bethVersion =
-    stream.bytes, stream.version, stream.userVersion, stream.bethVersion
-
-  local recordName = stream.recordName
+  local { bytes, version, userVersion, bethVersion, recordName } = stream
   local flags = 0
   local _numItems = 0
   local weightThreshold = 0

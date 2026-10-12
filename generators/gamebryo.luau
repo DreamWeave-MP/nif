@@ -752,9 +752,10 @@ local function emitSteps(out: Out, steps: { Step })
   end
 end
 
---- What every reader starts with: the stream's bytes and versions, in locals.
-local Versions = 'local bytes, version, userVersion, bethVersion = '
-  .. 'stream.bytes, stream.version, stream.userVersion, stream.bethVersion'
+--- What every reader starts with: the stream's bytes and versions, in locals; a record's reader
+--- its name too.
+local Versions = 'local { bytes, version, userVersion, bethVersion } = stream'
+local NamedVersions = 'local { bytes, version, userVersion, bethVersion, recordName } = stream'
 
 local function emitReader(
   out: Out,
@@ -765,9 +766,7 @@ local function emitReader(
 )
   local steps = flatten(definition, classes)
   open(out, header)
-  emit(out, Versions)
-  if typeName then emit(out, 'local recordName = stream.recordName') end
-
+  emit(out, if typeName then NamedVersions else Versions)
   local stored = declare(out, steps)
   emitSteps(out, steps)
   local parts = if typeName then { 'type = recordName' } else {}

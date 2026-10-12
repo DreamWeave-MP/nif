@@ -10,10 +10,7 @@ local NiLODNodeLODRange = require '../structs/NiLODNodeLODRange'
 local StructRow = { NiLODNodeLODRange = NiLODNodeLODRange.rows }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local bytes, version, userVersion, bethVersion =
-    stream.bytes, stream.version, stream.userVersion, stream.bethVersion
-
-  local recordName = stream.recordName
+  local { bytes, version, userVersion, bethVersion, recordName } = stream
   local name
   local extra
   local extraList

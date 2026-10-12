@@ -10,10 +10,7 @@ local Links = require '../links'
 local Empties, Metas = Array.empty, Array.metas
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local bytes, version, userVersion, bethVersion =
-    stream.bytes, stream.version, stream.userVersion, stream.bethVersion
-
-  local recordName = stream.recordName
+  local { bytes, version, userVersion, bethVersion, recordName } = stream
   local name
   local next
   local recordSize

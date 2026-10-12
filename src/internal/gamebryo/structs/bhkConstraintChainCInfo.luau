@@ -10,9 +10,7 @@ local ReadStruct = { bhkConstraintCInfo = bhkConstraintCInfo.read }
 local DefaultStruct = { bhkConstraintCInfo = bhkConstraintCInfo.default }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local bytes, version, userVersion, bethVersion =
-    stream.bytes, stream.version, stream.userVersion, stream.bethVersion
-
+  local { bytes, version, userVersion, bethVersion } = stream
   local entities
   local info
   entities, cursor = Custom.ptrList(stream, cursor)

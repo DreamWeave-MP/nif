@@ -12,9 +12,7 @@ local ReadStruct = {
 }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local bytes, version, userVersion, bethVersion =
-    stream.bytes, stream.version, stream.userVersion, stream.bethVersion
-
+  local { bytes, version, userVersion, bethVersion } = stream
   local _arrayIndices
   local _records
   local arrayIndices

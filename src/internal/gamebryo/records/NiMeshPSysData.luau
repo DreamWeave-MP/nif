@@ -12,10 +12,7 @@ local Empties, Metas = Array.empty, Array.metas
 local ReadStruct = { NiParticleInfo = NiParticleInfo.read }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local bytes, version, userVersion, bethVersion =
-    stream.bytes, stream.version, stream.userVersion, stream.bethVersion
-
-  local recordName = stream.recordName
+  local { bytes, version, userVersion, bethVersion, recordName } = stream
   local groupId
   local numVertices
   local _hasData

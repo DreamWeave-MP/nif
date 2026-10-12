@@ -34,9 +34,7 @@ local DefaultStruct = {
 }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local bytes, version, userVersion, bethVersion =
-    stream.bytes, stream.version, stream.userVersion, stream.bethVersion
-
+  local { bytes, version, userVersion, bethVersion } = stream
   local type
   local info
   local ballAndSocketInfo

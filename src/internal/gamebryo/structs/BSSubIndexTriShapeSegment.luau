@@ -8,9 +8,7 @@ local BSSubIndexTriShapeSubSegment = require './BSSubIndexTriShapeSubSegment'
 local ReadStruct = { BSSubIndexTriShapeSubSegment = BSSubIndexTriShapeSubSegment.read }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local bytes, version, userVersion, bethVersion =
-    stream.bytes, stream.version, stream.userVersion, stream.bethVersion
-
+  local { bytes, version, userVersion, bethVersion } = stream
   local startIndex
   local numPrimitives
   local parentArrayIndex

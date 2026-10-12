@@ -8,9 +8,7 @@ local NiTextureTransform = require './NiTextureTransform'
 local DefaultStruct = { NiTextureTransform = NiTextureTransform.default }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local bytes, version, userVersion, bethVersion =
-    stream.bytes, stream.version, stream.userVersion, stream.bethVersion
-
+  local { bytes, version, userVersion, bethVersion } = stream
   local enabled
   local sourceTexture = -1
   local clamp = 0

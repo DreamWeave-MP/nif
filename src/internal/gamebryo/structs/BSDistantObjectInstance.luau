@@ -10,9 +10,7 @@ local ReadStruct = { BSResourceID = BSResourceID.read }
 local DefaultStruct = { BSResourceID = BSResourceID.default }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local bytes, version, userVersion, bethVersion =
-    stream.bytes, stream.version, stream.userVersion, stream.bethVersion
-
+  local { bytes, version, userVersion, bethVersion } = stream
   local resourceId
   local _unknown
   local transforms
