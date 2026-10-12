@@ -48,12 +48,13 @@ function U16Array.set(array: Types.U16Array, index: number, value: number)
 end
 
 function U16Array.toTable(array: Types.U16Array): { number }
-  local list = table.create(array.count) :: { number }
-  local bytes = array.buffer
+  local count = array.count
+  local list = table.create(count) :: { number }
+  local bytes, cursor, stride = array.buffer, array.offset, array.stride
 
-  for index = 1, array.count do
-    local cursor = array.offset + (index - 1) * array.stride
+  for index = 1, count do
     list[index] = buffer.readu16(bytes, cursor)
+    cursor += stride
   end
 
   return list

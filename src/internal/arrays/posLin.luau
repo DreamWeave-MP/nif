@@ -56,12 +56,11 @@ function PosLinKeys.set(array: Types.PosLinKeys, index: number, time: number, va
 end
 
 function PosLinKeys.toTable(array: Types.PosLinKeys): { { time: number, value: vector } }
-  local list = table.create(array.count) :: { { time: number, value: vector } }
-  local bytes = array.buffer
+  local count = array.count
+  local list = table.create(count) :: { { time: number, value: vector } }
+  local bytes, cursor, stride = array.buffer, array.offset, array.stride
 
-  for index = 1, array.count do
-    local cursor = array.offset + (index - 1) * array.stride
-
+  for index = 1, count do
     list[index] = {
       time = buffer.readf32(bytes, cursor),
       value = vector.create(
@@ -70,6 +69,8 @@ function PosLinKeys.toTable(array: Types.PosLinKeys): { { time: number, value: v
         buffer.readf32(bytes, cursor + 12)
       ),
     }
+
+    cursor += stride
   end
 
   return list

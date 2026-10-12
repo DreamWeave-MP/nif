@@ -61,18 +61,19 @@ function Vec4Array.set(
 end
 
 function Vec4Array.toTable(array: Types.Vec4Array): { { number } }
-  local list = table.create(array.count) :: { { number } }
-  local bytes = array.buffer
+  local count = array.count
+  local list = table.create(count) :: { { number } }
+  local bytes, cursor, stride = array.buffer, array.offset, array.stride
 
-  for index = 1, array.count do
-    local cursor = array.offset + (index - 1) * array.stride
-
+  for index = 1, count do
     list[index] = {
       buffer.readf32(bytes, cursor),
       buffer.readf32(bytes, cursor + 4),
       buffer.readf32(bytes, cursor + 8),
       buffer.readf32(bytes, cursor + 12),
     }
+
+    cursor += stride
   end
 
   return list

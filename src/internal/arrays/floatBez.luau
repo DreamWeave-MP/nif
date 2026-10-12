@@ -66,20 +66,22 @@ end
 function FloatBezKeys.toTable(
   array: Types.FloatBezKeys
 ): { { time: number, value: number, inTan: number, outTan: number } }
+  local count = array.count
+
   local list =
-    table.create(array.count) :: { { time: number, value: number, inTan: number, outTan: number } }
+    table.create(count) :: { { time: number, value: number, inTan: number, outTan: number } }
 
-  local bytes = array.buffer
+  local bytes, cursor, stride = array.buffer, array.offset, array.stride
 
-  for index = 1, array.count do
-    local cursor = array.offset + (index - 1) * array.stride
-
+  for index = 1, count do
     list[index] = {
       time = buffer.readf32(bytes, cursor),
       value = buffer.readf32(bytes, cursor + 4),
       inTan = buffer.readf32(bytes, cursor + 8),
       outTan = buffer.readf32(bytes, cursor + 12),
     }
+
+    cursor += stride
   end
 
   return list

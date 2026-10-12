@@ -48,12 +48,13 @@ function F32Array.set(array: Types.F32Array, index: number, value: number)
 end
 
 function F32Array.toTable(array: Types.F32Array): { number }
-  local list = table.create(array.count) :: { number }
-  local bytes = array.buffer
+  local count = array.count
+  local list = table.create(count) :: { number }
+  local bytes, cursor, stride = array.buffer, array.offset, array.stride
 
-  for index = 1, array.count do
-    local cursor = array.offset + (index - 1) * array.stride
+  for index = 1, count do
     list[index] = buffer.readf32(bytes, cursor)
+    cursor += stride
   end
 
   return list

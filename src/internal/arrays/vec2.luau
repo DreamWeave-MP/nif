@@ -49,12 +49,13 @@ function Vec2Array.set(array: Types.Vec2Array, index: number, value: vector)
 end
 
 function Vec2Array.toTable(array: Types.Vec2Array): { vector }
-  local list = table.create(array.count) :: { vector }
-  local bytes = array.buffer
+  local count = array.count
+  local list = table.create(count) :: { vector }
+  local bytes, cursor, stride = array.buffer, array.offset, array.stride
 
-  for index = 1, array.count do
-    local cursor = array.offset + (index - 1) * array.stride
+  for index = 1, count do
     list[index] = vector.create(buffer.readf32(bytes, cursor), buffer.readf32(bytes, cursor + 4), 0)
+    cursor += stride
   end
 
   return list

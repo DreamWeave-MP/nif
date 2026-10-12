@@ -69,15 +69,15 @@ end
 function FloatTcbKeys.toTable(
   array: Types.FloatTcbKeys
 ): { { time: number, value: number, tension: number, continuity: number, bias: number } }
+  local count = array.count
+
   local list = table.create(
-    array.count
+    count
   ) :: { { time: number, value: number, tension: number, continuity: number, bias: number } }
 
-  local bytes = array.buffer
+  local bytes, cursor, stride = array.buffer, array.offset, array.stride
 
-  for index = 1, array.count do
-    local cursor = array.offset + (index - 1) * array.stride
-
+  for index = 1, count do
     list[index] = {
       time = buffer.readf32(bytes, cursor),
       value = buffer.readf32(bytes, cursor + 4),
@@ -85,6 +85,8 @@ function FloatTcbKeys.toTable(
       continuity = buffer.readf32(bytes, cursor + 12),
       bias = buffer.readf32(bytes, cursor + 16),
     }
+
+    cursor += stride
   end
 
   return list

@@ -49,16 +49,17 @@ function FloatLinKeys.set(array: Types.FloatLinKeys, index: number, time: number
 end
 
 function FloatLinKeys.toTable(array: Types.FloatLinKeys): { { time: number, value: number } }
-  local list = table.create(array.count) :: { { time: number, value: number } }
-  local bytes = array.buffer
+  local count = array.count
+  local list = table.create(count) :: { { time: number, value: number } }
+  local bytes, cursor, stride = array.buffer, array.offset, array.stride
 
-  for index = 1, array.count do
-    local cursor = array.offset + (index - 1) * array.stride
-
+  for index = 1, count do
     list[index] = {
       time = buffer.readf32(bytes, cursor),
       value = buffer.readf32(bytes, cursor + 4),
     }
+
+    cursor += stride
   end
 
   return list

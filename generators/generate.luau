@@ -2057,10 +2057,12 @@ local function arrayKindModule(kind: ArrayKind): string
 
   close(out)
   open(out, `function {name}.toTable(array: {typeName}): \{ {elementType(kind)} }`)
-  emit(out, `local list = table.create(array.count) :: \{ {elementType(kind)} }`)
-  emit(out, 'local bytes = array.buffer')
-  open(out, 'for index = 1, array.count do')
-  emit(out, 'local cursor = array.offset + (index - 1) * array.stride')
+  -- The array's fields are read once, into locals: read again for every element they cost a
+  -- list of numbers more than the elements do.
+  emit(out, 'local count = array.count')
+  emit(out, `local list = table.create(count) :: \{ {elementType(kind)} }`)
+  emit(out, 'local bytes, cursor, stride = array.buffer, array.offset, array.stride')
+  open(out, 'for index = 1, count do')
   if kind.shape == 'value' then
     emit(out, `list[index] = {reads[1]}`)
   elseif kind.shape == 'list' then
@@ -2077,9 +2079,10 @@ local function arrayKindModule(kind: ArrayKind): string
 
     if #group > 0 then table.insert(parts, 2, `value = \{ {table.concat(group, ', ')} }`) end
 
-    spaced(out, `list[index] = \{ {table.concat(parts, ', ')} }`)
+      spaced(out, `list[index] = \{ {table.concat(parts, ', ')} }`)
   end
 
+  emit(out, 'cursor += stride')
   close(out)
   blank(out)
   emit(out, 'return list')

@@ -61,18 +61,19 @@ function QuatArray.set(
 end
 
 function QuatArray.toTable(array: Types.QuatArray): { { number } }
-  local list = table.create(array.count) :: { { number } }
-  local bytes = array.buffer
+  local count = array.count
+  local list = table.create(count) :: { { number } }
+  local bytes, cursor, stride = array.buffer, array.offset, array.stride
 
-  for index = 1, array.count do
-    local cursor = array.offset + (index - 1) * array.stride
-
+  for index = 1, count do
     list[index] = {
       buffer.readf32(bytes, cursor + 4),
       buffer.readf32(bytes, cursor + 8),
       buffer.readf32(bytes, cursor + 12),
       buffer.readf32(bytes, cursor),
     }
+
+    cursor += stride
   end
 
   return list

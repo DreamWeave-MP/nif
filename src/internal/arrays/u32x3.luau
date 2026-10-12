@@ -58,17 +58,18 @@ function MipmapArray.set(
 end
 
 function MipmapArray.toTable(array: Types.MipmapArray): { { number } }
-  local list = table.create(array.count) :: { { number } }
-  local bytes = array.buffer
+  local count = array.count
+  local list = table.create(count) :: { { number } }
+  local bytes, cursor, stride = array.buffer, array.offset, array.stride
 
-  for index = 1, array.count do
-    local cursor = array.offset + (index - 1) * array.stride
-
+  for index = 1, count do
     list[index] = {
       buffer.readu32(bytes, cursor),
       buffer.readu32(bytes, cursor + 4),
       buffer.readu32(bytes, cursor + 8),
     }
+
+    cursor += stride
   end
 
   return list
