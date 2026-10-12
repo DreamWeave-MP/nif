@@ -9,7 +9,6 @@ local Text = require './text'
 local Types = require './types'
 local Writer = require './writer'
 
-type Record = Types.Record
 type Links = { number }
 type Map = { [number]: number }
 type Writer = Writer.Writer

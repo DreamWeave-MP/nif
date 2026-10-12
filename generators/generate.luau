@@ -2,9 +2,10 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
 --[[
-Turns `schema.luau` into the codec modules under `nif/`: `scan.luau`, `structs.luau`, one
-module per record type in `records/`, `load.luau` to require those on first use, `enums.luau`,
-and `types.luau`:
+Turns `schema.luau` into the codec modules under `nif/`: `scan.luau`, `structs.luau`, each
+record type's reader in `records/`, its `fill` in `fills/`, and its writer and link collector in
+`writes/`, `load.luau` and `codec.luau` to require those on first use, `enums.luau`, and
+`types.luau`:
 
   jess run --capability filesystem.read --capability filesystem.write \
     generators/generate.luau src/internal
@@ -13,8 +14,9 @@ For every record and struct there are four straight-line functions: `scan` walks
 collecting the links, `read` decodes them into one table, `write` encodes a table, and `links`
 collects the links of a decoded one. A record's read, write, and links cover its bases' fields
 too, so runs of fixed-size fields are read and written at constant offsets from one position and
-native code checks their bounds once. Only the scanners load with the package; a record type's
-module compiles the first time one is decoded.
+native code checks their bounds once. Only the scanners load with the package. A record type's
+reader compiles the first time one is decoded, and its `fill`, and its `write` and `links`, the
+first time each is used: compiling is most of what the first use of a type costs.
 
 What is written is the committed source as it stands, in the repository's Luau style: nothing
 formats it afterwards. The generated code reads `bytes` at `cursor`, writes through `writer`
@@ -1231,6 +1233,7 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
 
   local modules = {
     { 'Array', 'array' },
+    { 'Codec', 'codec' },
     { 'Custom', 'custom' },
     { 'Enums', 'enums' },
     { 'Structs', 'structs' },
@@ -1241,12 +1244,13 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
 
   local needs = {
     Array = uses 'Array' or uses 'Metas' or uses 'Empties',
+    Codec = uses 'Codec',
     Custom = uses 'Custom' or uses 'Identity',
     Enums = uses 'Names' or uses 'Values',
     Structs = uses 'ReadStruct' or uses 'WriteStruct' or uses 'StructLinks' or uses 'Stash',
     Text = uses 'Spellings' or uses 'Text',
     Types = true,
-    Writer = true,
+    Writer = uses 'Writer',
   }
 
   for _, module in modules do
@@ -1255,20 +1259,19 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
     end
   end
 
-  for _, line in
-    {
-      '',
-      'type Record = Types.Record',
-      'type Links = { number }',
-      'type Map = { [number]: number }',
-      'type Writer = Writer.Writer',
-      '',
-    }
+  local aliases = {
+    { 'Record', 'Types.Record' },
+    { 'Links', '{ number }' },
+    { 'Map', '{ [number]: number }' },
+    { 'Writer', 'Writer.Writer' },
+  }
 
-  do
-    table.insert(out, line)
+  table.insert(out, '')
+  for _, alias in aliases do
+    if uses(alias[1]) then table.insert(out, `type {alias[1]} = {alias[2]}`) end
   end
 
+  table.insert(out, '')
   if uses 'Names' and uses 'Values' then
     table.insert(out, 'local Names, Values = Enums.names, Enums.values')
   elseif uses 'Names' then
@@ -1344,44 +1347,13 @@ local function structsModule(): string
   return (string.gsub(text, 'local Structs = require \'./structs\'\n', ''))
 end
 
---- One record type's reader, writer, and link collector, each over its fields and its bases',
---- loaded the first time a record of the type is decoded.
-local function recordModule(name: string, definition: Definition): string
-  local fields = flatten(definition)
-  local flat: Definition = { fields = fields }
-  local out: Out = { lines = {}, depth = 0, pending = false }
-  checkNames(name, fields)
-  open(
-    out,
-    'local function read(bytes: buffer, cursor: number, typeName: string): (Record, number)'
-  )
-  emitRead(out, fields, true)
-  close(out)
-  blank(out)
-  open(
-    out,
-    'local function fill(bytes: buffer, cursor: number, typeName: string, into: Record): number'
-  )
-  emitRead(out, fields, true, true)
-  close(out)
-  blank(out)
-  emitFunction(
-    out,
-    'local function write(writer: Writer, record: Record, map: Map)',
-    function() emitWrite(out, flat, 'record') end,
-    'return'
-  )
-  emitFunction(
-    out,
-    'local function collectLinks(record: Record, links: Links, linkCount: number): number',
-    function() emitLinks(out, flat, 'record') end,
-    'return linkCount'
-  )
-  emit(
-    out,
-    'return table.freeze { read = read, fill = fill, write = write, links = collectLinks }'
-  )
-  local text = table.concat(out.lines, '\n')
+--- What a record type's codec is made of (`codec.luau`): the reader, and the two modules it
+--- requires only when asked for them.
+type RecordModules = { read: string, fill: string, write: string }
+
+--- A record module: `body` under the requires and locals it uses, the struct tables among them.
+local function recordModule(body: { string }): string
+  local text = table.concat(body, '\n')
   local sources = {
     { 'ReadStruct', 'Structs.read' },
     { 'WriteStruct', 'Structs.write' },
@@ -1401,7 +1373,119 @@ local function recordModule(name: string, definition: Definition): string
     declare = { `local {table.concat(locals, ', ')} = {table.concat(values, ', ')}` }
   end
 
-  return codecModule(out.lines, '../', declare)
+  return codecModule(body, '../', declare)
+end
+
+--- One record type's modules, each over its fields and its bases'. The reader loads the first
+--- time a record of the type is decoded; `fill`, and `write` with `links`, each load the first
+--- time the type's codec is asked for them. A module's functions are all compiled when it
+--- loads, which is most of what a type's first use costs, so a file that is only decoded
+--- compiles its readers and nothing else.
+local function recordModules(name: string, definition: Definition): RecordModules
+  local fields = flatten(definition)
+  local flat: Definition = { fields = fields }
+  checkNames(name, fields)
+  local read: Out = { lines = {}, depth = 0, pending = false }
+  open(
+    read,
+    'local function read(bytes: buffer, cursor: number, typeName: string): (Record, number)'
+  )
+  emitRead(read, fields, true)
+  close(read)
+  blank(read)
+  local parts = {
+    'read',
+    `function() return require '../fills/{name}' end`,
+    `function() return require '../writes/{name}' end`,
+  }
+
+  emit(read, `return Codec.lazy({table.concat(parts, ', ')})`)
+  local fill: Out = { lines = {}, depth = 0, pending = false }
+  open(
+    fill,
+    'local function fill(bytes: buffer, cursor: number, typeName: string, into: Record): number'
+  )
+  emitRead(fill, fields, true, true)
+  close(fill)
+  blank(fill)
+  emit(fill, 'return fill')
+  local write: Out = { lines = {}, depth = 0, pending = false }
+  emitFunction(
+    write,
+    'local function write(writer: Writer, record: Record, map: Map)',
+    function() emitWrite(write, flat, 'record') end,
+    'return'
+  )
+  emitFunction(
+    write,
+    'local function collectLinks(record: Record, links: Links, linkCount: number): number',
+    function() emitLinks(write, flat, 'record') end,
+    'return linkCount'
+  )
+  emit(write, 'return table.freeze { write = write, links = collectLinks }')
+  return {
+    read = recordModule(read.lines),
+    fill = recordModule(fill.lines),
+    write = recordModule(write.lines),
+  }
+end
+
+--- What makes a codec of a record type's reader: `fill`, and `write` and `links`, required
+--- from their own modules the first time the codec is asked for one.
+local function codecHelperModule(): string
+  local out: Out = { lines = {}, depth = 0, pending = false }
+  lines(out, {
+    '--!strict',
+    '--!native',
+    '-- SPDX-License-Identifier: MIT OR Apache-2.0',
+    Generated,
+    '',
+    'local Types = require \'./types\'',
+    'local Writer = require \'./writer\'',
+    '',
+    'type Read = (bytes: buffer, cursor: number, typeName: string) -> (Types.Record, number)',
+    'type Fill = (bytes: buffer, cursor: number, typeName: string, into: Types.Record) -> number',
+    'type Write = (writer: Writer.Writer, record: Types.Record, map: { [number]: number }) -> ()',
+    'type Links = (record: Types.Record, links: { number }, linkCount: number) -> number',
+    '',
+    '--- One record type\'s codec.',
+    'export type Codec = { read read: Read, read fill: Fill, read write: Write, read links: Links }',
+    '',
+    '--- A codec\'s parts as they load: its reader from the start.',
+    'type Parts = { read: Read, fill: Fill?, write: Write?, links: Links? }',
+    '',
+    '--- A record type\'s codec, given its reader from `records/`. Its `fill` (`fills/`), and its',
+    '--- `write` and `links` (`writes/`), are each required the first time the codec is asked for',
+    '--- one: a module\'s functions are all compiled when it loads, which is most of what a type\'s',
+    '--- first use costs, and a file that is only decoded never asks.',
+    'local function lazy(',
+    '  read: Read,',
+    '  fill: () -> Fill,',
+    '  saving: () -> { write: Write, links: Links }',
+    '): Codec',
+    '  local parts: Parts = { read = read }',
+    '  local meta = {}',
+    '',
+    '  function meta.__index(_: Parts, part: string): unknown',
+    '    if part == \'fill\' then',
+    '      local loaded = fill()',
+    '      parts.fill = loaded',
+    '      return loaded',
+    '    end',
+    '',
+    '    if part ~= \'write\' and part ~= \'links\' then return nil end',
+    '',
+    '    local loaded = saving()',
+    '    parts.write, parts.links = loaded.write, loaded.links',
+    '    return if part == \'write\' then loaded.write else loaded.links',
+    '  end',
+    '',
+    '  return (setmetatable(parts, meta) :: unknown) :: Codec',
+    'end',
+    '',
+    'return table.freeze { lazy = lazy }',
+  })
+  return table.concat(out.lines, '\n') .. '\n'
 end
 
 --- The record types that have a module: those with fields of their own, or none to inherit.
@@ -1429,16 +1513,10 @@ local function loadModule(): string
     '-- SPDX-License-Identifier: MIT OR Apache-2.0',
     Generated,
     '',
-    'local Types = require \'./types\'',
-    'local Writer = require \'./writer\'',
+    'local Codec = require \'./codec\'',
     '',
-    '--- One record type\'s codec, from `records/`.',
-    'export type Codec = {',
-    '  read read: (bytes: buffer, cursor: number, typeName: string) -> (Types.Record, number),',
-    '  read fill: (bytes: buffer, cursor: number, typeName: string, into: Types.Record) -> number,',
-    '  read write: (writer: Writer.Writer, record: Types.Record, map: { [number]: number }) -> (),',
-    '  read links: (record: Types.Record, links: { number }, linkCount: number) -> number,',
-    '}',
+    '--- One record type\'s codec: its reader from `records/`, and what that requires when asked.',
+    'export type Codec = Codec.Codec',
     '',
     'local Load: { [string]: () -> Codec } = {}',
   })
@@ -2002,18 +2080,32 @@ local function arrayAccess(): string
   return table.concat(out.lines, '\n') .. '\n'
 end
 
-local recordsDir = jess.fs.join(outDir, 'records')
+--- Where each of a record type's modules goes.
+local RecordDirs: RecordModules = table.freeze {
+  read = jess.fs.join(outDir, 'records'),
+  fill = jess.fs.join(outDir, 'fills'),
+  write = jess.fs.join(outDir, 'writes'),
+}
+
 local written: { [string]: boolean } = {}
+for _, folder in RecordDirs :: { [string]: string } do
+  if not jess.fs.isDir(folder) then jess.fs.createDir(folder) end
+end
+
 for _, entry in Schema.Records do
   if moduleOf(entry.name) ~= entry.name then continue end
 
   local file = `{entry.name}.luau`
   written[file] = true
-  jess.fs.write(jess.fs.join(recordsDir, file), recordModule(entry.name, entry.definition))
+  for part, text in recordModules(entry.name, entry.definition) :: { [string]: string } do
+    jess.fs.write(jess.fs.join((RecordDirs :: { [string]: string })[part], file), text)
+  end
 end
 
-for _, file in jess.fs.list(recordsDir) do
-  if not written[file] then jess.fs.remove(jess.fs.join(recordsDir, file)) end
+for _, folder in RecordDirs :: { [string]: string } do
+  for _, file in jess.fs.list(folder) do
+    if not written[file] then jess.fs.remove(jess.fs.join(folder, file)) end
+  end
 end
 
 --- Each record type's base, and whether a type is or derives from another.
@@ -2078,10 +2170,12 @@ jess.fs.write(jess.fs.join(outDir, 'classes.luau'), classesModule())
 jess.fs.write(jess.fs.join(outDir, 'scan.luau'), scanModule())
 jess.fs.write(jess.fs.join(outDir, 'structs.luau'), structsModule())
 jess.fs.write(jess.fs.join(outDir, 'load.luau'), loadModule())
+jess.fs.write(jess.fs.join(outDir, 'codec.luau'), codecHelperModule())
 jess.fs.write(jess.fs.join(outDir, 'enums.luau'), enums())
 jess.fs.write(jess.fs.join(outDir, 'array_types.luau'), arrayTypes())
 jess.fs.write(jess.fs.join(outDir, 'array_access.luau'), arrayAccess())
 jess.fs.write(jess.fs.join(outDir, 'types.luau'), types())
 print(
-  `wrote scan, structs, load, enums, types, array_types, array_access, and records/ in {outDir}`
+  'wrote scan, structs, load, codec, enums, types, array_types, array_access, records/, fills/,'
+    .. ` and writes/ in {outDir}`
 )

@@ -3,8 +3,8 @@
 
 --[[
 The Morrowind (4.0.0.2) NIF records as data: what `generate.luau` turns into the readers,
-scanners (`nif/scan.luau`), readers, writers, and link walkers (`nif/records/`, `nif/structs.luau`),
-and the types in `nif/types.luau`.
+scanners (`nif/scan.luau`), readers (`nif/records/`, `nif/fills/`), writers and link walkers
+(`nif/writes/`), the structs' (`nif/structs.luau`), and the types in `nif/types.luau`.
 
 A field is `{ name, kind, ...options }`, read and written in order:
 
