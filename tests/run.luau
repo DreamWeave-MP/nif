@@ -141,12 +141,7 @@ local Scenarios: { [string]: () -> buffer } = {}
 
 Scenarios['bare records'] = function(): buffer
   local file = nif.new()
-  local roots = {}
-  for _, name in nif.recordTypes do
-    table.insert(roots, file:insert { type = name })
-  end
-
-  file.roots = roots
+  file.roots = [for name in nif.recordTypes => file:insert { type = name }]
   return file:save()
 end
 
@@ -304,12 +299,7 @@ local SceneRoot = {
 }
 
 local function typesOf(file: nif.Nif): string
-  local names = {}
-  for index = 0, file.count - 1 do
-    table.insert(names, file:typeOf(index) or '-')
-  end
-
-  return table.concat(names, ' ')
+  return table.concat([for index in range(0, file.count - 1) => file:typeOf(index) or '-'], ' ')
 end
 
 --- Each record's links as the scan found them, `index:links`, records without any left out.
