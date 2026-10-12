@@ -20,6 +20,12 @@ looks like in Morrowind, and makes OpenMW behave the same way.
 local Array = require './array'
 local Classes = require './classes'
 
+local dataPlane = require '@dream/data'
+
+--- The `u16` that starts each six-byte skin weight, its vertex: read by the data plane, a whole
+--- bone's in one call.
+local WeightVertices: dream_data_Kind_u16 = dataPlane.u16(6)
+
 export type Kind = 'rcn' | 'ncc' | 'markers' | 'skinWeights' | 'unreachable'
 
 --- One repair made: its kind, what changed, and the record fixed, by index before the fix.
@@ -209,15 +215,20 @@ local function fixSkinWeights(nif: any, fixed: { Fixed })
     local dropped = 0
     for _, bone in nif:record(data).boneData do
       local weights = bone.vertexWeights
+      local count = weights.count
+      if count == 0 then continue end
+
+      -- Most bones weight no vertex past the shape, and are left as they are.
+      local past = WeightVertices:anyGe(weights.buffer, weights.offset, count, vertices)
+      if not past then continue end
+
       local kept = [
-        for entry in range(0, weights.count - 1)
+        for entry in range(0, count - 1)
         if buffer.readu16(weights.buffer, weights.offset + entry * 6) < vertices
         => entry
       ]
 
-      if #kept == weights.count then continue end
-
-      dropped += weights.count - #kept
+      dropped += count - #kept
       -- The kept weights' bytes as they were: every float keeps its bits.
       local filtered = Array.new('u16f32', #kept)
       for position, entry in kept do
