@@ -334,11 +334,7 @@ end
 --- bulletnifloader.cpp `findBoundingBox`: the first "Bounding Box" object sets the actor's
 --- collision box, and must be a box with positive extents.
 local function checkBoundingBox(checker: Checker, roots: { number })
-  local stack = {}
-  for position = #roots, 1, -1 do
-    table.insert(stack, roots[position])
-  end
-
+  local stack = [for position in range(#roots, 1, -1) => roots[position]]
   local seen = {}
   while #stack > 0 do
     local index = table.remove(stack) :: number
