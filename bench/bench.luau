@@ -486,6 +486,8 @@ local function built()
     return made.buffers.weightCount + #made.skinBones + #made.skins + #made.issues
   end)
 
+  workload('built skin fix', 0, function(): number return #fix.fix(nif.open(skinned)) end)
+
   local vertices, faces = gridVertices(side), gridTriangles(side)
 
   workload(`build a shape of {side * side} vertices`, 2, function(): number
