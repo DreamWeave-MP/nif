@@ -33,9 +33,7 @@ end
 local function finish(writer: Writer): buffer
   if writer.cursor == writer.capacity then return writer.bytes end
 
-  local out = buffer.create(writer.cursor)
-  buffer.copy(out, 0, writer.bytes, 0, writer.cursor)
-  return out
+  return writer.bytes[1:writer.cursor]
 end
 
 --- A string as a u32 length and its Windows-1252 bytes, with no terminator.
