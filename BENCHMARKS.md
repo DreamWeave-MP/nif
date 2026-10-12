@@ -118,6 +118,11 @@ What moved, and why:
     asks for one of its codecs: to 36.5 ms and 93.6 ms;
   - each record type's scanner is a module of its own, required the first time `open` meets
     the type: to 29.5 ms, and up to 97.5 ms (see below);
+  - each custom codec module has its own copy of the small reads and writes it calls, so the
+    compiler puts them in line again as it did when the codecs were one module. That bought
+    nothing cold: 29.5 to 29.2 ms and, on review, 100.9 to 105.2 ms, the second given back by
+    the next step. Warm, `all_types` `open + decode` and `read into one table a type` were
+    1.03x and 1.07x for it over five alternated runs, which is no change by the rule above;
   - every string field is read through one function, `Text.field`. The readers used to intern
     where they read, and l3i compiles that lowering at every place it is written, about 0.75 ms
     a place: fifty readers with a name each paid it one by one. To 24.9 ms and 80.2 ms;
@@ -169,3 +174,18 @@ modules lazily changed that history. Head's samples of `open + save untouched` i
 were 37, 75, 77, 76, and 78 µs. Timed alone in a loop, alternating base and head three times,
 `save` of an opened file is 28.9 to 29.5 µs on base and 29.2 to 30.3 µs on head, and
 `open + decode + save` 62 to 71 µs on base and 59 to 62 µs on head.
+
+The table was read again on review, by the same protocol with three rounds, twice with the
+allocator as it comes and once with freed pages kept. Every row came out within noise of the
+table but these: `open + save untouched` of `random_objects` was 0.44x in one whole run and 0.96x
+in the next, where `open + decode + save` was 0.70x and 0.63x and `open + fix + save` 0.78x and
+0.75x; with freed pages kept the three were 0.97x, 1.00x, and 1.04x. Which side a row lands on
+is steadier than chance inside this bench: filtered to the one row, it still reads 64 µs on base
+against 109 µs on head for `open + decode + save`, and 79 against 123 µs for
+`open + fix + save`, while `open + save untouched` alone is level at 36 µs. Outside it, a loop of
+2,000 calls a batch reads 62 to 65 µs on base and 60 to 61 µs on head for
+`open + decode + save`, whether or not a collection is forced between batches. And base's time
+is the lucky case rather than the usual one: with only one of the two thresholds raised, both
+sides take 117 to 131 µs for that row. A process that saves many files of this size can land on
+either side with either version of the package. What would settle it is Jess keeping freed pages
+for every script it runs, which is not this package's to do.
