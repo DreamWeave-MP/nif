@@ -9,6 +9,8 @@ effect, shape, particle system, and their controllers.
 
 local Base = require './base'
 
+local data = require '@dream/data'
+
 type Checker = Base.Checker
 type RenderState = Base.RenderState
 
@@ -18,31 +20,69 @@ local startsWithIgnoreCase = Base.startsWithIgnoreCase
 local Constants = Base.constants
 local NiGeometryTypes, BsGeometryTypes = Constants.NiGeometryTypes, Constants.BsGeometryTypes
 
---- Calls `visit` with each triangle of a `u16` view of triples.
-local function triangleList(list: any, visit: (number, number, number) -> ())
-  local bytes, offset = list.buffer, list.offset
-  for triangle = 0, list.count // 3 - 1 do
-    local at = offset + triangle * 6
-    visit(buffer.readu16(bytes, at), buffer.readu16(bytes, at + 2), buffer.readu16(bytes, at + 4))
+--- `u16`s side by side, the corners of triangles and the points of strips, and the `u16` that
+--- starts each six-byte skin weight: read by the data plane, a whole run in one call.
+local Corners: dream_data_Kind_u16 = data.u16()
+local WeightVertices: dream_data_Kind_u16 = data.u16(6)
+
+--- How many triangles a `u16` view of triples holds and, given a shape's `vertices`, the first
+--- of their indices at or past them.
+local function countList(list: any, vertices: number?): (number, number?)
+  local bytes, offset, corners = list.buffer, list.offset, list.count // 3 * 3
+  if not vertices or corners == 0 then return corners // 3, nil end
+
+  local past = Corners:anyGe(bytes, offset, corners, vertices)
+  if not past then return corners // 3, nil end
+
+  for corner = 0, corners - 1 do
+    local index = buffer.readu16(bytes, offset + corner * 2)
+    if index >= vertices then return corners // 3, index end
   end
+
+  return corners // 3, nil
 end
 
---- Calls `visit` with each triangle of strips, unrolled: strips shorter than 3 and degenerate
---- triangles are dropped.
-local function unrollStrips(strips: any, visit: (number, number, number) -> ())
+--- How many triangles strips unroll to, strips shorter than 3 and degenerate triangles dropped,
+--- and, given a shape's `vertices`, the first index at or past them of the triangles kept, each
+--- triangle's indices in the order it is wound.
+local function countStrips(strips: any, vertices: number?): (number, number?)
+  local count, bad = 0, nil
+  local limit = vertices or math.huge
   for _, strip in strips do
-    local bytes, offset = strip.buffer, strip.offset
-    for step = 0, strip.count - 3 do
+    local bytes, offset, length = strip.buffer, strip.offset, strip.count
+    -- Only a strip with an index past the vertices is looked at index by index.
+    local suspect = false
+    if vertices and not bad and length >= 3 then
+      suspect = Corners:anyGe(bytes, offset, length, limit)
+    end
+
+    for step = 0, length - 3 do
       local at = offset + step * 2
       local first, second, third =
         buffer.readu16(bytes, at), buffer.readu16(bytes, at + 2), buffer.readu16(bytes, at + 4)
+      if first == second or second == third or first == third then continue end
+
+      count += 1
+      if not suspect then continue end
+
+      -- Every other triangle is wound the other way.
       if step % 2 == 1 then
         second, third = third, second
       end
 
-      if first ~= second and second ~= third and first ~= third then visit(first, second, third) end
+      if first >= limit then
+        bad = first
+      elseif second >= limit then
+        bad = second
+      elseif third >= limit then
+        bad = third
+      end
+
+      suspect = bad == nil
     end
   end
+
+  return count, bad
 end
 
 --- `getPartitions`: a skin instance's own partitions, or its skin data's.
@@ -54,54 +94,34 @@ local function partitionsOf(checker: Checker, skin: any): any
   return if data then get(checker, data.partitions, 'NiSkinPartition') else nil
 end
 
---- Calls `visit` with each triangle OpenMW draws and collides with: the skin partitions' when
---- there are any, otherwise the data's.
-local function shapeTriangles(
-  checker: Checker,
-  geometry: any,
-  visit: (number, number, number) -> ()
-)
+--- How many triangles OpenMW draws and collides with: the skin partitions' when there are any,
+--- otherwise the data's. Given the shape's `vertices`, also the first vertex index at or past
+--- them, in the order the triangles are drawn.
+local function countTriangles(checker: Checker, geometry: any, vertices: number?): (number, number?)
   local skin = get(checker, geometry.skin, 'NiSkinInstance')
   local partitions = if skin then partitionsOf(checker, skin) else nil
   if partitions then
+    local count, bad = 0, nil
     for _, partition in partitions.partitions do
-      triangleList(partition.trueTriangles, visit)
-      unrollStrips(partition.trueStrips, visit)
+      local listed, pastList = countList(partition.trueTriangles, if bad then nil else vertices)
+      bad = bad or pastList
+      local unrolled, pastStrips = countStrips(partition.trueStrips, if bad then nil else vertices)
+      bad = bad or pastStrips
+      count += listed + unrolled
     end
 
-    return
+    return count, bad
   end
 
-  if geometry.data < 0 then return end
+  if geometry.data < 0 then return 0, nil end
 
   local shape = get(checker, geometry.data, 'NiTriShapeData')
-  if shape then
-    triangleList(shape.triangles, visit)
-    return
-  end
+  if shape then return countList(shape.triangles, vertices) end
 
   local strips = get(checker, geometry.data, 'NiTriStripsData')
-  if strips then unrollStrips(strips.strips, visit) end
-end
+  if strips then return countStrips(strips.strips, vertices) end
 
---- How many triangles `shapeTriangles` visits, and the first vertex index at or past `vertices`.
-local function countTriangles(checker: Checker, geometry: any, vertices: number): (number, number?)
-  local count = 0
-  local bad: number? = nil
-  shapeTriangles(checker, geometry, function(first: number, second: number, third: number)
-    count += 1
-    if bad then return end
-
-    if first >= vertices then
-      bad = first
-    elseif second >= vertices then
-      bad = second
-    elseif third >= vertices then
-      bad = third
-    end
-  end)
-
-  return count, bad
+  return 0, nil
 end
 
 --- nifloader.cpp `handleNiGeometry`: `influences.at(vertex)` throws past the end.
@@ -113,11 +133,11 @@ local function checkSkinWeights(checker: Checker, shape: number, skin: number, v
   local worst = -1
   for _, bone in data.bones do
     local weights = bone.weights
-    local bytes, offset = weights.buffer, weights.offset
-    for entry = 0, weights.count - 1 do
-      local vertex = buffer.readu16(bytes, offset + entry * 6)
-      if vertex >= vertices and vertex > worst then worst = vertex end
-    end
+    local bytes, offset, count = weights.buffer, weights.offset, weights.count
+    if count == 0 then continue end
+
+    local past = WeightVertices:maxGe(bytes, offset, count, vertices)
+    if past and past > worst then worst = past end
   end
 
   if worst < 0 then return end
@@ -225,21 +245,7 @@ local function checkBsGeometry(checker: Checker, index: number)
   local shapeType = typeName(checker, index)
   local name = shape.name
   local vertices = if bit32.btest(shape.vertDesc.flags, 0x1) then #shape.vertData else 0
-  local triangles = 0
-  local bad: number? = nil
-  triangleList(shape.triangles, function(first: number, second: number, third: number)
-    triangles += 1
-    if bad then return end
-
-    if first >= vertices then
-      bad = first
-    elseif second >= vertices then
-      bad = second
-    elseif third >= vertices then
-      bad = third
-    end
-  end)
-
+  local triangles, bad = countList(shape.triangles, vertices)
   if vertices == 0 or triangles == 0 then
     push(
       checker,
@@ -690,6 +696,5 @@ end
 
 return table.freeze {
   walk = walk,
-  shapeTriangles = shapeTriangles,
   countTriangles = countTriangles,
 }

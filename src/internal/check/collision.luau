@@ -146,11 +146,7 @@ local function visit(
   local data = get(checker, geometry.data, 'NiGeometryData')
   if not data or #data.vertices == 0 then return end
 
-  local triangles = 0
-  Scene.shapeTriangles(checker, geometry, function()
-    triangles += 1
-  end)
-
+  local triangles = Scene.countTriangles(checker, geometry)
   checker.stats.collisionTriangles += triangles
   if triangles == 0 or inCollisionNode then return end
 
