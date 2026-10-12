@@ -13,7 +13,6 @@ the roots, in file order, and writes a link to a record it leaves out as -1, as 
 ]]
 
 local Array = require '@self/internal/array'
-local Edit = require '@self/internal/edit'
 local Load = require '@self/internal/load'
 local Scan = require '@self/internal/scan'
 local Types = require '@self/internal/types'
@@ -31,6 +30,12 @@ local ScanByToken: { Scan.Scanner }, NameByToken: { string } = {}, {}
 for name, walk in Scan.scan do
   local token = TypeNames:intern(name)
   ScanByToken[token], NameByToken[token] = walk, name
+end
+
+--- What building and editing records needs (`nif/edit.luau`), required the first time a file is
+--- built or edited: a file that is only read, checked, or saved as it is never compiles it.
+local function edit(): typeof(require '@self/internal/edit')
+  return require '@self/internal/edit'
 end
 
 --- A decoded record: any record type in `nif/types.luau`; `record.type` narrows it.
@@ -315,8 +320,9 @@ end
 --- geometry gets its bound and normals, and new strips their triangle count, unless given.
 --- Nothing links to the record until a link is set to its index.
 function Nif.insert(self: Nif, fields: { [string]: any }): number
-  local made = Edit.fromFields(fields)
-  Edit.derive(made, fields)
+  local editing = edit()
+  local made = editing.fromFields(fields)
+  editing.derive(made, fields)
   local slot = self.count + 1
   self.count = slot
   self.types[slot], self.decoded[slot] = made.type, made
@@ -370,7 +376,7 @@ function Nif.attach(self: Nif, parent: number, child: number)
 
   local list = node.children:toTable()
   table.insert(list, child)
-  node.children = Edit.toArray('i32', list)
+  node.children = edit().toArray('i32', list)
 end
 
 --- Takes `child` (a 0-based index) out of the children of the node at `parent`; whether it was
@@ -382,7 +388,7 @@ function Nif.detach(self: Nif, parent: number, child: number): boolean
   local kept = [for index in node.children:toTable() if index ~= child => index]
   if #kept == node.children.count then return false end
 
-  node.children = Edit.toArray('i32', kept)
+  node.children = edit().toArray('i32', kept)
   return true
 end
 
@@ -399,9 +405,10 @@ end
 
 --- Points the textures spelled `from` (ignoring case and slash direction) at `to`; how many.
 function Nif.setTexture(self: Nif, from: string, to: string): number
-  local wanted, changed = Edit.normalizePath(from), 0
+  local editing = edit()
+  local wanted, changed = editing.normalizePath(from), 0
   for _, texture in self:textures() do
-    if Edit.normalizePath(texture.path) ~= wanted then continue end
+    if editing.normalizePath(texture.path) ~= wanted then continue end
 
     local source = (record(self, texture.record) :: any).source
     source.external = to
@@ -543,12 +550,13 @@ end
 
 --- Recomputes every geometry data record's bound from its vertices; how many.
 function Nif.updateBounds(self: Nif): number
+  local editing = edit()
   local count = 0
   for _, index in self:find() do
     local data = record(self, index) :: any
     if data.vertices == nil or data.bound == nil then continue end
 
-    Edit.updateBound(data)
+    editing.updateBound(data)
     count += 1
   end
 
@@ -560,7 +568,8 @@ function Nif.computeNormals(self: Nif, index: number)
   local data = record(self, index) :: any
   if not data or data.vertices == nil then error(`record {index} isn't geometry data`, 0) end
 
-  Edit.computeNormals(data, Edit.triangles(data))
+  local editing = edit()
+  editing.computeNormals(data, editing.triangles(data))
 end
 
 --- How many records a save keeps: those reachable from the roots.
