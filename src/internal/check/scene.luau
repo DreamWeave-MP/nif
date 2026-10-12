@@ -14,11 +14,9 @@ local data = require '@dream/data'
 type Checker = Base.Checker
 type RenderState = Base.RenderState
 
-local get, is, recordType, typeName, nameOf, push =
-  Base.get, Base.is, Base.recordType, Base.typeName, Base.nameOf, Base.push
-local startsWithIgnoreCase = Base.startsWithIgnoreCase
+local {get, is, recordType, typeName, nameOf, push, startsWithIgnoreCase} = Base
 local Constants = Base.constants
-local NiGeometryTypes, BsGeometryTypes = Constants.NiGeometryTypes, Constants.BsGeometryTypes
+local {NiGeometryTypes, BsGeometryTypes} = Constants
 
 --- `u16`s side by side, the corners of triangles and the points of strips, and the `u16` that
 --- starts each six-byte skin weight: read by the data plane, a whole run in one call.
@@ -132,8 +130,7 @@ local function checkSkinWeights(checker: Checker, shape: number, skin: number, v
 
   local worst = -1
   for _, bone in data.bones do
-    local weights = bone.weights
-    local bytes, offset, count = weights.buffer, weights.offset, weights.count
+    local {buffer: bytes, offset, count} = bone.weights
     if count == 0 then continue end
 
     local past = WeightVertices:maxGe(bytes, offset, count, vertices)
@@ -357,17 +354,15 @@ local function checkParticles(checker: Checker, index: number)
   end
 
   if not controller then
-    for _, entry in chain do
-      if isSystemController(entry[1]) then
-        push(
-          checker,
-          'info',
-          'inactive_particles',
-          index,
-          `"{name}" has only inactive particle controllers, so it has no particles`
-        )
-        return
-      end
+    if any[for entry in chain => isSystemController(entry[1])] then
+      push(
+        checker,
+        'info',
+        'inactive_particles',
+        index,
+        `"{name}" has only inactive particle controllers, so it has no particles`
+      )
+      return
     end
 
     push(
@@ -633,11 +628,7 @@ local function walkNode(
   end
 
   local chain = Base.controllers(checker, av.controller)
-  local hasVisController = false
-  for _, entry in chain do
-    if is(checker, entry[1], 'NiVisController') then hasVisController = true end
-  end
-
+  local hasVisController = any[for entry in chain => is(checker, entry[1], 'NiVisController')]
   Base.checkNodeControllers(checker, index, chain)
 
   -- Hidden subtrees (flag 0x1) stay in the graph for their controllers, but only draw with an

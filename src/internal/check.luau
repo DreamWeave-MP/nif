@@ -119,11 +119,7 @@ local function checkHeaderRecords(bytes: buffer, report: Report, header: Header.
 end
 
 local function wontLoad(report: Report): boolean
-  for _, finding in report.findings do
-    if finding.severity == 'wont_load' then return true end
-  end
-
-  return false
+  return any[for finding in report.findings => finding.severity == 'wont_load']
 end
 
 --- Checks a NIF, named by its path: only the file name is used, `.kf` files being checked as

@@ -13,9 +13,7 @@ local Scene = require './scene'
 type Checker = Base.Checker
 type CollisionState = Base.CollisionState
 
-local get, recordType, typeName, nameOf, push =
-  Base.get, Base.recordType, Base.typeName, Base.nameOf, Base.push
-local startsWithIgnoreCase = Base.startsWithIgnoreCase
+local {get, recordType, typeName, nameOf, push, startsWithIgnoreCase} = Base
 local Constants = Base.constants
 
 local function andMore(more: number): string
@@ -101,11 +99,7 @@ local function visit(
   local node = get(checker, index, 'NiNode')
   if node then
     local switch = kind == 'NiSwitchNode' or kind == 'NiFltAnimationNode'
-    local children = {}
-    for _, child in node.children do
-      if child >= 0 then table.insert(children, child) end
-    end
-
+    local children = [for child in node.children if child >= 0 => child]
     local count = if switch then math.min(#children, 1) else #children
     if switch and #children > 1 and not inCollisionNode then
       push(

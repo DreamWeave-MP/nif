@@ -11,11 +11,8 @@ local Base = require './base'
 
 type Checker = Base.Checker
 
-local get, is, recordType, typeName, push =
-  Base.get, Base.is, Base.recordType, Base.typeName, Base.push
+local {get, is, recordType, typeName, push, isActive, checkInterpolator, hasInterpolator} = Base
 local Constants = Base.constants
-local isActive, checkInterpolator, hasInterpolator =
-  Base.isActive, Base.checkInterpolator, Base.hasInterpolator
 
 --- `getShaderMaterial`: shader names that are `.bgsm`/`.bgem` material files.
 local function isMaterial(name: string): boolean
@@ -126,12 +123,11 @@ end
 
 --- nifloader.cpp `handleTextureSet`: only the diffuse, normal, and glow slots are used.
 local function checkTextureSet(checker: Checker, shader: number, set: any)
-  local unhandled = {}
-  for slot, texture in set.textures do
-    if slot <= Constants.TextureSetStages or texture == '' then continue end
-
-    table.insert(unhandled, `{slot - 1} ("{texture}")`)
-  end
+  local unhandled = [
+    for slot, texture in enumerate(set.textures)
+    if slot > Constants.TextureSetStages and texture ~= ''
+    => `{slot - 1} ("{texture}")`
+  ]
 
   if #unhandled == 0 then return end
 

@@ -23,7 +23,7 @@ local Types = require './types'
 
 type Checker = Base.Checker
 
-local get, is, typeName, push = Base.get, Base.is, Base.typeName, Base.push
+local {get, is, typeName, push} = Base
 local Constants = Base.constants
 
 --- nifloader.cpp `loadKf`: only `NiSequenceStreamHelper` animations load.
@@ -161,12 +161,11 @@ end
 
 local function run(checker: Checker, rootsChecked: boolean)
   Base.findReachable(checker, rootsChecked)
-  local roots = {}
-  for _, root in checker.file.roots do
-    if root >= 0 and root < #checker.records and get(checker, root, 'NiAVObject') then
-      table.insert(roots, root)
-    end
-  end
+  local roots = [
+    for root in checker.file.roots
+    if root >= 0 and root < #checker.records and get(checker, root, 'NiAVObject')
+    => root
+  ]
 
   if checker.kf then
     checkKf(checker)
@@ -197,11 +196,7 @@ end
 local function check(name: string, file: Reader.File, report: Types.Report)
   report.deep = true
   local fileName = string.lower(string.match(name, '[^/\\]*$') or name)
-  local rootsChecked = false
-  for _, finding in report.findings do
-    if finding.code == 'root_out_of_range' then rootsChecked = true end
-  end
-
+  local rootsChecked = any[for finding in report.findings => finding.code == 'root_out_of_range']
   local checker: Checker = {
     file = file,
     records = file.records,

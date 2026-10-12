@@ -203,11 +203,7 @@ end
 
 --- `NiObjectNET::getExtraList`: the extra data list, then the chain older files use.
 local function extraList(checker: Checker, net: any): { number }
-  local list = {}
-  for _, index in net.extraList do
-    if index >= 0 then table.insert(list, index) end
-  end
-
+  local list = [for index in net.extraList if index >= 0 => index]
   local seen = {}
   local link = net.extra
   while #list < MaxChain do
@@ -265,11 +261,7 @@ local function gamebryoCollision(checker: Checker): boolean return checker.versi
 
 local function findReachable(checker: Checker, rootsChecked: boolean)
   local file = checker.file
-  local stack = {}
-  for _, root in file.roots do
-    if root >= 0 and root < #checker.records then table.insert(stack, root) end
-  end
-
+  local stack = [for root in file.roots if root >= 0 and root < #checker.records => root]
   local count = 0
   while #stack > 0 do
     local index = table.remove(stack) :: number
@@ -309,8 +301,8 @@ local function checkRootTransform(checker: Checker)
   local node = get(checker, 0, 'NiNode')
   if not node then return end
 
-  local transform = node.transform
-  local identity = isIdentityTransform(transform.translation, transform.rotation, transform.scale)
+  local {translation, rotation, scale} = node.transform
+  local identity = isIdentityTransform(translation, rotation, scale)
   if identity or string.lower(node.name) == 'bip01' then return end
 
   push(
@@ -330,11 +322,7 @@ local function findCollisionNode(checker: Checker, root: number, recursive: bool
 
   local seen = { [root] = true }
   -- The stack pops the last child first.
-  local stack = {}
-  for _, child in node.children do
-    if child >= 0 then table.insert(stack, child) end
-  end
-
+  local stack = [for child in node.children if child >= 0 => child]
   while #stack > 0 do
     local child = table.remove(stack) :: number
     if is(checker, child, 'RootCollisionNode') then return child end
