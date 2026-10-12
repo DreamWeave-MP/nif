@@ -972,6 +972,27 @@ suite.describe('building', function()
     end
   )
 
+  suite.it(
+    'reads every record type bare into a table as it decodes it, and through one table',
+    function()
+      local built = buffer.tostring(Scenarios['bare records']())
+      local file = nif.open(built)
+      local into = {}
+      for index = 0, file.count - 1 do
+        local name = file:typeOf(index)
+        if support.digest(file:read(index, {})) ~= support.digest(file:record(index)) then
+          error(`record {index}, {name}, reads into a table differently`, 0)
+        end
+
+        if (file:read(index, into) :: nif.Record).type ~= name then
+          error(`record {index}, {name}, reads through one table as another type`, 0)
+        end
+      end
+
+      expect(difference(saved(file), built)).toBeNil()
+    end
+  )
+
   suite.it('adds a shape with its data, texture, and material under a node', function()
     local file = nif.new()
     local root = file:insert { type = 'NiNode', name = 'Root' }
