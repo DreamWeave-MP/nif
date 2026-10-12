@@ -1240,6 +1240,73 @@ suite.describe('editing', function()
     expect(function() file:computeNormals(0) end).toThrow 'record 0 isn\'t geometry data'
     expect(function() file:computeNormals(99) end).toThrow 'record 99 isn\'t geometry data'
   end)
+
+  suite.it('derives normals only from triangles whose vertices are all there', function()
+    local file = nif.new()
+    local index = file:insert {
+      type = 'NiTriShapeData',
+      vertices = { { 0, 0, 0 }, { 2, 0, 0 }, { 0, 3, 0 }, { 0, 0, 1 }, { 9, 9, 9 } },
+      triangles = { { 0, 1, 2 }, { 0, 1, 7 }, { 0, 3, 1 } },
+    }
+
+    -- The first two vertices are in two triangles, at right angles and of areas 3 and 1: (0, 2,
+    -- 6) over its length, in 32-bit arithmetic. The last is in none, and the triangle that names
+    -- an eighth vertex counts for nothing.
+    local data = file:record(index) :: any
+    expect(data.normals:toTable()).toEqual {
+      vector.create(0, 0.3162277638912201, 0.9486832618713379),
+      vector.create(0, 0.3162277638912201, 0.9486832618713379),
+      vector.create(0, 0, 1),
+      vector.create(0, 1, 0),
+      vector.zero,
+    }
+
+    -- Strips unroll with alternating winding, so both of this one's triangles face the same way.
+    local strips = file:insert {
+      type = 'NiTriStripsData',
+      vertices = { { 0, 0, 0 }, { 1, 0, 0 }, { 0, 1, 0 }, { 1, 1, 0 } },
+      stripLengths = { 4, 3, 2 },
+      strips = { 0, 1, 2, 3, 3, 3, 0, 1, 2 },
+    }
+
+    expect((file:record(strips) :: any).normals:toTable()).toEqual {
+      vector.create(0, 0, 1),
+      vector.create(0, 0, 1),
+      vector.create(0, 0, 1),
+      vector.create(0, 0, 1),
+    }
+
+    file:computeNormals(strips)
+    expect((file:record(strips) :: any).normals:toTable()[4]).toBe(vector.create(0, 0, 1))
+  end)
+
+  suite.it('bounds vertices as `math.min` and `math.max` take a NaN: the first one stays', function()
+    local file = nif.new()
+    local index = file:insert {
+      type = 'NiTriShapeData',
+      vertices = { { 0 / 0, 1, 2 }, { 3, 4, 5 }, { -1, 0 / 0, 9 }, { 7, -2, -0 } },
+      triangles = { { 0, 1, 2 } },
+    }
+
+    local bound = (file:record(index) :: any).bound
+    expect(bound.center.x ~= bound.center.x).toBe(true)
+    expect(bound.center.y).toBe(1)
+    expect(bound.center.z).toBe(4.5)
+    -- Every distance from a center with a NaN in it is NaN, which no radius is less than.
+    expect(bound.radius).toBe(0)
+
+    local second = file:insert {
+      type = 'NiTriShapeData',
+      vertices = { { 1, 1, 2 }, { 3, 0 / 0, 5 }, { -1, 6, 9 } },
+      triangles = { { 0, 1, 2 } },
+    }
+
+    bound = (file:record(second) :: any).bound
+    expect(bound.center).toBe(vector.create(1, 3.5, 5.5))
+    expect(bound.radius).toBe(4.7434163093566895)
+    expect(file:updateBounds()).toBe(2)
+    expect((file:record(second) :: any).bound.center).toBe(vector.create(1, 3.5, 5.5))
+  end)
 end)
 
 suite.describe('jess-nif\'s answers', function()
