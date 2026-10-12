@@ -23,6 +23,13 @@ indices and skin vertices), copied from the file's bytes where it can be.
 local Classes = require './classes'
 local Writer = require './writer'
 
+local dataPlane = require '@dream/data'
+
+--- `u16`s side by side, triangle indices and packed skin vertices, and the `u16` that starts
+--- each six-byte skin weight of a file: read by the data plane, a whole run in one call.
+local Indices: dream_data_Kind_u16 = dataPlane.u16()
+local WeightVertices: dream_data_Kind_u16 = dataPlane.u16(6)
+
 --- The most scene nodes `build` makes. A record linked from several parents becomes a node under
 --- each, so a small file whose levels each link the next one twice would otherwise expand
 --- exponentially. Real content stays in the hundreds.
@@ -559,6 +566,9 @@ local function build(nif: any): Scene
         local length = lengths:get(strip)
         -- A strip longer than the points left has the points left.
         local available = math.max(0, math.min(length, total - point))
+        -- Room for a triangle at every step: none is checked for as it is written.
+        Writer.reserve(unrolled, math.max(available - 2, 0) * 6)
+        local out, cursor = unrolled.bytes, unrolled.cursor
         for step = 0, available - 3 do
           local base = from + (point + step) * 2
           local first = buffer.readu16(source, base)
@@ -566,20 +576,19 @@ local function build(nif: any): Scene
           local third = buffer.readu16(source, base + 4)
           if first == second or second == third or first == third then continue end
 
-          Writer.reserve(unrolled, 6)
-          local cursor = unrolled.cursor
-          buffer.writeu16(unrolled.bytes, cursor, first)
+          buffer.writeu16(out, cursor, first)
           if step % 2 == 0 then
-            buffer.writeu16(unrolled.bytes, cursor + 2, second)
-            buffer.writeu16(unrolled.bytes, cursor + 4, third)
+            buffer.writeu16(out, cursor + 2, second)
+            buffer.writeu16(out, cursor + 4, third)
           else
-            buffer.writeu16(unrolled.bytes, cursor + 2, third)
-            buffer.writeu16(unrolled.bytes, cursor + 4, second)
+            buffer.writeu16(out, cursor + 2, third)
+            buffer.writeu16(out, cursor + 4, second)
           end
 
-          unrolled.cursor = cursor + 6
+          cursor += 6
         end
 
+        unrolled.cursor = cursor
         point += length
       end
 
@@ -594,11 +603,10 @@ local function build(nif: any): Scene
       return done(nil)
     end
 
-    for corner = 0, triangleCount * 3 - 1 do
-      if buffer.readu16(triangles, at + corner * 2) >= vertexCount then
-        report(key, 'IndexOutOfRange')
-        return done(nil)
-      end
+    local past = Indices:anyGe(triangles, at, triangleCount * 3, vertexCount)
+    if past then
+      report(key, 'IndexOutOfRange')
+      return done(nil)
     end
 
     local normalList, colorList, uvLists = data.normals, data.vertexColors, data.uvSets
@@ -632,9 +640,7 @@ local function build(nif: any): Scene
       if value == 0 then
         buffer.fill(writer.bytes, writer.cursor, 0, count * 4)
       else
-        for element = 0, count - 1 do
-          buffer.writef32(writer.bytes, writer.cursor + element * 4, value)
-        end
+        dataPlane.fill(writer.bytes, 'f32', writer.cursor, count, value)
       end
 
       writer.cursor += count * 4
@@ -1056,11 +1062,14 @@ local function build(nif: any): Scene
 
   --- Whether every weight of `skin` names a vertex below `vertexCount`.
   local function skinFits(skin: Skin, vertexCount: number): boolean
+    local vertices = skinVertices.bytes
     for bone = skin.bones[1] + 1, skin.bones[2] do
       local range = skinBones[bone].weights
-      for weight = range[1], range[2] - 1 do
-        if buffer.readu16(skinVertices.bytes, weight * 2) >= vertexCount then return false end
-      end
+      local first, count = range[1], range[2] - range[1]
+      if count <= 0 then continue end
+
+      local past = Indices:anyGe(vertices, first * 2, count, vertexCount)
+      if past then return false end
     end
 
     return true
@@ -1081,14 +1090,14 @@ local function build(nif: any): Scene
     local fits = true
     for _, bone in boneData do
       local weights = bone.vertexWeights
-      for entry = 0, weights.count - 1 do
-        if buffer.readu16(weights.buffer, weights.offset + entry * 6) >= vertexCount then
-          fits = false
-          break
-        end
-      end
+      local count = weights.count
+      if count == 0 then continue end
 
-      if not fits then break end
+      local past = WeightVertices:anyGe(weights.buffer, weights.offset, count, vertexCount)
+      if past then
+        fits = false
+        break
+      end
     end
 
     if #boneData ~= bones.count or not fits then
