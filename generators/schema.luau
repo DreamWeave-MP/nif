@@ -207,12 +207,7 @@ local function vec(name: string, ...: Component): ArrayValue
 end
 
 local function f32s(names: { string }, first: number): { ArrayValue }
-  local values = {}
-  for index, name in names do
-    table.insert(values, scalar(name, 'f32', first + (index - 1) * 4))
-  end
-
-  return values
+  return [for index, name in enumerate(names) => scalar(name, 'f32', first + (index - 1) * 4)]
 end
 
 local function join(...: { ArrayValue }): { ArrayValue }

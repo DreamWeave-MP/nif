@@ -20,11 +20,7 @@ if not openmw or not outDir then
 end
 
 local nifDir = jess.fs.join(openmw, 'components', 'nif')
-local headers = {}
-for _, name in jess.fs.list(nifDir) do
-  if string.sub(name, -4) == '.hpp' then table.insert(headers, name) end
-end
-
+local headers = [for name in jess.fs.list(nifDir) if string.sub(name, -4) == '.hpp' => name]
 table.sort(headers)
 
 local function read(name: string): string

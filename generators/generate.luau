@@ -247,11 +247,7 @@ local function nanCheck(kind: string, value: string): string?
     return nil
   end
 
-  local tests = {}
-  for _, part in parts do
-    table.insert(tests, `{part} ~= {part}`)
-  end
-
+  local tests = [for part in parts => `{part} ~= {part}`]
   return `if {table.concat(tests, ' or ')} then writer.nan = true end`
 end
 
@@ -1030,10 +1026,7 @@ local function emitWrite(out: Out, definition: Definition, subject: string)
   if not string.find(text, '> capacity then') then table.remove(names) end
 
   local list = table.concat(names, ', ')
-  local values = {}
-  for _, name in names do
-    table.insert(values, `writer.{name}`)
-  end
+  local values = [for name in names => `writer.{name}`]
 
   -- The writer's fields are taken by name: one of them as a plain local, several as a pattern.
   local take = `{list} = {table.concat(values, ', ')}`
@@ -1593,11 +1586,7 @@ local function enums(): string
 
   open(out, 'local Names: { [string]: { [number]: string } } = {')
   for _, name in sortedKeys(Schema.Enums) do
-    local parts = {}
-    for _, entry in Schema.Enums[name] do
-      table.insert(parts, `[{entry[2]}] = '{entry[1]}'`)
-    end
-
+    local parts = [for entry in Schema.Enums[name] => `[{entry[2]}] = '{entry[1]}'`]
     spaced(out, `{name} = table.freeze \{ {table.concat(parts, ', ')} },`)
   end
 
@@ -1820,11 +1809,7 @@ local function types(): string
 
   blank(out)
   for _, name in sortedKeys(Schema.Enums) do
-    local labels = {}
-    for _, entry in Schema.Enums[name] do
-      table.insert(labels, `'{entry[1]}'`)
-    end
-
+    local labels = [for entry in Schema.Enums[name] => `'{entry[1]}'`]
     emit(out, '--- A value not in the list is kept as its number.')
     emit(out, `export type {name} = {table.concat(labels, ' | ')} | number`)
     blank(out)
@@ -1852,11 +1837,7 @@ local function types(): string
     close(out, '}')
   end
 
-  local names = {}
-  for _, entry in Schema.Records do
-    table.insert(names, entry.name)
-  end
-
+  local names = [for entry in Schema.Records => entry.name]
   emit(out, '--- Any record.')
   emit(out, `export type Record = {table.concat(names, ' | ')}`)
   blank(out)
@@ -1970,10 +1951,10 @@ local function arrayTypes(): string
 end
 
 local function readValue(value: ArrayValue): string
-  local parts = {}
-  for _, component in value.components do
-    table.insert(parts, `buffer.read{component.encoding}(bytes, {at(component.offset)})`)
-  end
+  local parts = [
+    for component in value.components
+    => `buffer.read{component.encoding}(bytes, {at(component.offset)})`
+  ]
 
   if value.type == 'number' then return parts[1] end
 
@@ -2183,11 +2164,7 @@ local function classesModule(): string
     'local Parents: { [string]: string } = {',
   }
 
-  local names = {}
-  for _, entry in Schema.Records do
-    if entry.definition.base then table.insert(names, entry.name) end
-  end
-
+  local names = [for entry in Schema.Records if entry.definition.base => entry.name]
   table.sort(names)
   for _, name in names do
     for _, entry in Schema.Records do

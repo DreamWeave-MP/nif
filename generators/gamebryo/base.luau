@@ -5,7 +5,7 @@
 
 local Schema = require '../gamebryo_schema'
 
-local class, struct, same = Schema.class, Schema.struct, Schema.same
+local {class, struct, same} = Schema
 
 class('Extra', nil, {
   { 'name', 'string', when = 'V >= @10.0.1.0' },

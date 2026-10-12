@@ -5,7 +5,7 @@
 
 local Schema = require '../gamebryo_schema'
 
-local class, struct, same = Schema.class, Schema.struct, Schema.same
+local {class, struct, same} = Schema
 
 --[[
 Links read as `custom:ptr` are checked by the class's `post`, where OpenMW's order puts them

@@ -164,7 +164,7 @@ local function expand(
   depth: number
 )
   local indent = string.rep('  ', depth)
-  local open, close = group.open, group.close
+  local {open, close} = group
   local inner = string.sub(text, open + 1, close - 1)
   local braces = string.byte(text, open) == 123
 
@@ -179,12 +179,7 @@ local function expand(
   end
 
   inner = string.gsub(string.gsub(inner, '^%s+', ''), '%s+$', '')
-  local starts = {}
-
-  for _, comma in scan(inner).commas do
-    table.insert(starts, comma + 1)
-  end
-
+  local starts = [for comma in scan(inner).commas => comma + 1]
   local items: { string } = {}
 
   for _, item in cut(inner, starts) do
@@ -301,11 +296,7 @@ place = function(lines: { string }, text: string, depth: number, role: Role)
   end
 
   -- Several values returned: one a line. A table and what follows it stay `}, rest`.
-  local starts = {}
-
-  for _, comma in marks.commas do
-    if comma < #text then table.insert(starts, comma + 1) end
-  end
+  local starts = [for comma in marks.commas if comma < #text => comma + 1]
 
   if value == 8 and #starts > 0 and string.sub(text, 8, 8) ~= '{' then
     for index, part in cut(text, starts) do

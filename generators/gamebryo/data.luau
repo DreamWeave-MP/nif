@@ -5,7 +5,7 @@
 
 local Schema = require '../gamebryo_schema'
 
-local class, struct = Schema.class, Schema.struct
+local {class, struct} = Schema
 
 --- A pixel format channel that wasn't read.
 local NoChannel = 'DefaultStruct.NiPixelFormatChannelData()'
