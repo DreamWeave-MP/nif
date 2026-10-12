@@ -382,10 +382,23 @@ local function defects(): nif.Nif
   return file
 end
 
+--- What `skinned` builds besides its one shape and one bone.
+type SkinOptions = {
+  --- The vertices the bone weights, each half as much as the one before: 0, 2, and 7 without.
+  weighted: { number }?,
+  --- A second shape, `Smaller`, of two vertices, under the same skin (records 6 and 7).
+  shared: boolean?,
+  --- The partitions of an `NiSkinPartition` the skin data links, as a file holds them after
+  --- their count.
+  partitions: { string }?,
+}
+
 --- A skinned triangle whose one bone weights vertices 0, 2, and 7, of the shape's three. The
---- model builds everything but the weights, whose array kind only a file can supply: the bone
---- is spliced into the saved `NiSkinData` (record 2), after its bone count and partition link.
-local function skinned(): string
+--- model builds everything but the weights and the partitions, whose array kinds only a file can
+--- supply: the bone is spliced into the saved `NiSkinData` (record 2), after its bone count and
+--- partition link, and the partitions into the last record, over its count of none.
+local function skinned(options: SkinOptions?): string
+  local settings: SkinOptions = options or {}
   local file = nif.new()
   local root = file:insert { type = 'NiNode', name = 'Root' }
   local bone = file:insert { type = 'NiNode', name = 'Bone' }
@@ -401,11 +414,35 @@ local function skinned(): string
   }
   local shapeRecord = file:record(shape) :: any
   shapeRecord.skinInstance = skin
+  if settings.shared then
+    local smaller = file:shape {
+      name = 'Smaller',
+      vertices = { { 0, 0, 0 }, { 1, 0, 0 } },
+      triangles = { { 0, 1, 1 } },
+      parent = root,
+    }
+    local smallerRecord = file:record(smaller) :: any
+    smallerRecord.skinInstance = skin
+  end
+
+  local partition: number? = nil
+  local partitions = settings.partitions
+  if partitions then
+    partition = file:insert { type = 'NiSkinPartition' }
+    local dataRecord = file:record(data) :: any
+    dataRecord.skinPartition = partition
+  end
+
   file.roots = { root }
 
   local bytes = buffer.tostring(file:save())
-  local body = nif.open(bytes).bodies[data + 1]
-  local weights = u16(3) .. u16(0) .. f32(1) .. u16(2) .. f32(0.5) .. u16(7) .. f32(0.25)
+  local opened = nif.open(bytes)
+  local body = opened.bodies[data + 1]
+  local weighted = settings.weighted or { 0, 2, 7 }
+  local weights = u16(#weighted)
+    .. table.concat(
+      [for position, vertex in enumerate(weighted) => u16(vertex) .. f32(1 / 2 ^ (position - 1))]
+    )
   local boneData = IdentityRows
     .. f32(0)
     .. f32(0)
@@ -413,11 +450,72 @@ local function skinned(): string
     .. f32(1)
     .. string.rep('\0', 16)
     .. weights
-  return string.sub(bytes, 1, body + 52)
-    .. u32(1)
-    .. i32(-1)
-    .. boneData
-    .. string.sub(bytes, body + 61)
+  local spliced = string.sub(bytes, 1, body + 52) .. u32(1) .. i32(partition or -1) .. boneData
+  if not partition or not partitions then return spliced .. string.sub(bytes, body + 61) end
+
+  local count = opened.bodies[partition + 1]
+  return spliced
+    .. string.sub(bytes, body + 61, count)
+    .. u32(#partitions)
+    .. table.concat(partitions)
+    .. string.sub(bytes, count + 5)
+end
+
+--- One partition of an `NiSkinPartition` over one bone, a weight of 1 for each vertex of
+--- `vertexMap`, as NetImmerse 4.0.0.2 writes it: its triangles (as indices into the map, three a
+--- triangle) when it has no strips, its strips of `stripLengths` otherwise.
+local function partitionBytes(
+  vertexMap: { number },
+  stripLengths: { number },
+  indices: { number }
+): string
+  local function u16s(values: { number }): string
+    return table.concat([for value in values => u16(value)])
+  end
+
+  return u16(#vertexMap)
+    .. u16(if #stripLengths == 0 then #indices // 3 else 0)
+    .. u16(1)
+    .. u16(#stripLengths)
+    .. u16(1)
+    .. u16(0)
+    .. u16s(vertexMap)
+    .. string.rep(f32(1), #vertexMap)
+    .. u16s(stripLengths)
+    .. u16s(indices)
+    .. u8(0)
+end
+
+--- A root over one shape, `Past`, of the suite's five vertices and `triangles`.
+local function listed(triangles: { { number } }): nif.Nif
+  local file = nif.new()
+  local root = file:insert { type = 'NiNode', name = 'Root' }
+  file:shape { name = 'Past', vertices = Vertices, triangles = triangles, parent = root }
+  file.roots = { root }
+  return file
+end
+
+--- A root over one `NiTriStrips`, `Strips`, of the suite's five vertices and strips of
+--- `lengths` over `points`.
+local function stripped(lengths: { number }, points: { number }): nif.Nif
+  local file = nif.new()
+  local root = file:insert { type = 'NiNode', name = 'Root' }
+  local data = file:insert {
+    type = 'NiTriStripsData',
+    vertices = Vertices,
+    stripLengths = lengths,
+    strips = points,
+  }
+
+  file:attach(root, file:insert { type = 'NiTriStrips', name = 'Strips', geometryData = data })
+  file.roots = { root }
+  return file
+end
+
+--- The `u16`s of a built scene's index buffer.
+local function indicesOf(built: scene.Scene): { number }
+  local indices = built.buffers.indices
+  return [for index in range(0, built.buffers.indexCount - 1) => buffer.readu16(indices, index * 2)]
 end
 
 --- A root node followed by a copy of itself that nothing links to: a save never writes one, so
@@ -1946,6 +2044,69 @@ suite.describe('@nif/scene', function()
     }
   end)
 
+  suite.it('leaves out a shape whose triangles or strips index past its vertices', function()
+    local built = scene.build(listed { { 0, 1, 2 }, { 2, 6, 5 }, { 7, 3, 4 } })
+    expect(#built.nodes).toBe(2)
+    expect(built.drawables).toEqual {}
+    expect(built.geometries).toEqual {}
+    expect(built.buffers.vertexCount).toBe(0)
+    expect(built.issues).toEqual {
+      { source = 1, recordType = 'NiTriShapeData', kind = 'IndexOutOfRange' },
+    }
+
+    -- The last index of the last triangle alone.
+    built = scene.build(listed { { 0, 1, 2 }, { 2, 3, 5 } })
+    expect(built.issues).toEqual {
+      { source = 1, recordType = 'NiTriShapeData', kind = 'IndexOutOfRange' },
+    }
+
+    built = scene.build(stripped({ 3, 4, 3 }, { 0, 1, 2, 1, 1, 7, 9, 3, 3, 8 }))
+    expect(built.drawables).toEqual {}
+    expect(built.issues).toEqual {
+      { source = 1, recordType = 'NiTriStripsData', kind = 'IndexOutOfRange' },
+    }
+  end)
+
+  suite.it('unrolls strips with alternating winding, without their degenerate triangles', function()
+    local built = scene.build(stripped({ 4, 3 }, { 0, 1, 3, 2, 2, 3, 4 }))
+    expect(built.issues).toEqual {}
+    expect(indicesOf(built)).toEqual { 0, 1, 3, 1, 2, 3, 2, 3, 4 }
+    expect(built.geometries[1].indices).toEqual { 0, 9 }
+
+    -- The 9 is past the five vertices, but only in a triangle that isn't drawn.
+    built = scene.build(stripped({ 3, 3 }, { 0, 1, 2, 1, 1, 9 }))
+    expect(built.issues).toEqual {}
+    expect(indicesOf(built)).toEqual { 0, 1, 2 }
+    expect(built.buffers.vertexCount).toBe(5)
+
+    -- No vertex colors, so every vertex is white; the normals are the ones building derived.
+    expect(built.geometries[1].hasColors).toBe(false)
+    expect(built.geometries[1].hasNormals).toBe(true)
+    expect(buffer.tostring(built.buffers.colors)).toBe(string.rep(f32(1), 20))
+  end)
+
+  suite.it('gives a shared skin only to the shapes its weights stay inside', function()
+    local built = scene.build(nif.open(skinned { weighted = { 0, 2 }, shared = true }))
+    expect(built.drawables).toEqual {
+      { node = 2, geometry = 0, material = 0, skin = 0, layer = 'Opaque' },
+      { node = 3, geometry = 1, material = 0, layer = 'Opaque' },
+    }
+
+    expect(built.issues).toEqual {
+      { source = 3, recordType = 'NiSkinInstance', kind = 'SkinMismatch' },
+    }
+    expect(built.skinBones[1].weights).toEqual { 0, 2 }
+    expect(buffer.tostring(built.buffers.skinVertices)).toBe(u16(0) .. u16(2))
+    expect(buffer.tostring(built.buffers.skinWeights)).toBe(f32(1) .. f32(0.5))
+
+    -- The last of the bone's weights alone is past the shape.
+    built = scene.build(nif.open(skinned { weighted = { 0, 1, 3 } }))
+    expect(built.skins).toEqual {}
+    expect(built.issues).toEqual {
+      { source = 3, recordType = 'NiSkinInstance', kind = 'SkinMismatch' },
+    }
+  end)
+
   for _, asset in Assets do
     suite.it(`gives jess-nif's answer for {asset.name}, and leaves its save alone`, function()
       local file = nif.open(buffer.fromstring(asset.bytes))
@@ -2348,6 +2509,119 @@ suite.describe('@nif/check', function()
       },
     }
     expect(report.stats).toEqual(stats { records = 2, reachableRecords = 1, nodes = 1 })
+  end)
+
+  suite.it('names the first vertex index past a shape\'s vertices, in the order it draws', function()
+    local report = findings('list.nif', listed({ { 0, 1, 2 }, { 2, 6, 5 }, { 7, 3, 4 } }):save())
+    expect(report.findings).toEqual {
+      {
+        severity = 'broken',
+        code = 'vertex_index_out_of_range',
+        message = '"Past" uses vertex 6 of 5; this may crash OpenMW',
+        record = 1,
+      },
+    }
+
+    local drawn = stats {
+      records = 3,
+      reachableRecords = 3,
+      nodes = 1,
+      shapes = 1,
+      vertices = 5,
+      triangles = 3,
+      collisionTriangles = 3,
+    }
+
+    expect(report.stats).toEqual(drawn)
+
+    -- The last index of the last triangle alone.
+    report = findings('last.nif', listed({ { 0, 1, 2 }, { 2, 3, 4 }, { 4, 3, 5 } }):save())
+    expect(report.findings[1].message).toBe '"Past" uses vertex 5 of 5; this may crash OpenMW'
+    expect(report.stats).toEqual(drawn)
+
+    -- A strip's second triangle is wound the other way, so its third index is met before its
+    -- second; a degenerate triangle isn't met at all, nor counted.
+    report = findings('strips.nif', stripped({ 3, 4, 3 }, { 0, 1, 2, 1, 1, 7, 9, 3, 3, 8 }):save())
+    expect(report.findings).toEqual {
+      {
+        severity = 'broken',
+        code = 'vertex_index_out_of_range',
+        message = '"Strips" uses vertex 9 of 5; this may crash OpenMW',
+        record = 1,
+      },
+    }
+
+    drawn.triangles, drawn.collisionTriangles = 2, 2
+    expect(report.stats).toEqual(drawn)
+
+    report = findings('degenerate.nif', stripped({ 3, 3 }, { 0, 1, 2, 1, 1, 9 }):save())
+    expect(report.findings).toEqual {}
+    drawn.triangles, drawn.collisionTriangles = 1, 1
+    expect(report.stats).toEqual(drawn)
+
+    report = findings('strips.nif', stripped({ 4, 3 }, { 0, 1, 3, 2, 2, 3, 4 }):save())
+    expect(report.findings).toEqual {}
+    drawn.triangles, drawn.collisionTriangles = 3, 3
+    expect(report.stats).toEqual(drawn)
+  end)
+
+  suite.it('counts a skinned shape\'s triangles from its partitions, through their maps', function()
+    -- Two triangles of the first partition, which its map turns into (0, 2, 6) and (6, 2, 0),
+    -- and the one triangle of the second's strip that isn't degenerate.
+    local report = findings(
+      'partitions.nif',
+      skinned {
+        weighted = { 0, 2 },
+        partitions = {
+          partitionBytes({ 0, 2, 6 }, {}, { 0, 1, 2, 2, 1, 0 }),
+          partitionBytes({ 0, 1, 2 }, { 5 }, { 0, 1, 2, 2, 0 }),
+        },
+      }
+    )
+
+    expect(report.findings).toEqual {
+      {
+        severity = 'broken',
+        code = 'vertex_index_out_of_range',
+        message = '"Skinned" uses vertex 6 of 3; this may crash OpenMW',
+        record = 4,
+      },
+    }
+
+    expect(report.stats).toEqual(stats {
+      records = 7,
+      reachableRecords = 7,
+      nodes = 2,
+      shapes = 1,
+      vertices = 3,
+      triangles = 3,
+      collisionTriangles = 3,
+      skinned = true,
+    })
+
+    -- Only a strip's map leads past the shape, and only where its winding turns.
+    report = findings(
+      'partitions.nif',
+      skinned {
+        weighted = { 0, 2 },
+        partitions = { partitionBytes({ 0, 1, 2, 8, 9 }, { 4 }, { 0, 0, 3, 4 }) },
+      }
+    )
+    expect(report.findings[1].message).toBe '"Skinned" uses vertex 9 of 3; this may crash OpenMW'
+    expect((report.stats :: check.Stats).triangles).toBe(1)
+  end)
+
+  suite.it('names the highest vertex a skin weights past the shape', function()
+    expect(findings('skinned.nif', skinned { weighted = { 7, 9, 2 } }).findings).toEqual {
+      {
+        severity = 'wont_load',
+        code = 'skin_weight_out_of_range',
+        message = 'the skin weights vertex 9, but the shape has 3 vertices',
+        record = 5,
+      },
+    }
+
+    expect(findings('skinned.nif', skinned { weighted = { 0, 1, 2 } }).findings).toEqual {}
   end)
 
   suite.it('lists the textures a file names, as it spells them', function()
