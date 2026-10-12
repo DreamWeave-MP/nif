@@ -2,14 +2,21 @@
 --!native
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
-local Strings = require './strings'
+local Text = require '../text'
 local Types = require '../types'
 local Writer = require '../writer'
 
 type Writer = Writer.Writer
 type Map = { [number]: number }
 
-local readString = Strings.read
+--- A u32 length and the bytes, cut at the first NUL the way OpenMW reads names and decoded, once
+--- per spelling.
+local function readString(bytes: buffer, cursor: number): (string, number)
+  local length = buffer.readu32(bytes, cursor)
+  if length == 0 then return '', cursor + 4 end
+
+  return Text.field(bytes, cursor + 4, length), cursor + 4 + length
+end
 
 -- A sequence's target: an external file name, or two numbers.
 local sequenceTarget = {}

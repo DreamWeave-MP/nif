@@ -11,8 +11,6 @@ local Types = require './types'
 
 local Metas, Empties = Array.metas, Array.empty
 local Identity = Custom.identity
-local Spellings: dream_intern_Pool = Text.pool
-local Strings = Text.decoded
 
 local ReadStruct = {}
 
@@ -121,14 +119,7 @@ end
 function ReadStruct.NiSequence(bytes: buffer, cursor: number): (Types.NiSequence, number)
   local sequenceName
   local sequenceNameLength = buffer.readu32(bytes, cursor)
-  local sequenceNameToken = Spellings:intern(bytes, cursor + 4, sequenceNameLength)
-  sequenceName = Strings[sequenceNameToken]
-
-  if not sequenceName then
-    sequenceName = Text.cut(bytes, cursor + 4, sequenceNameLength)
-    Strings[sequenceNameToken] = sequenceName
-  end
-
+  sequenceName = Text.field(bytes, cursor + 4, sequenceNameLength)
   cursor += 4 + sequenceNameLength
   local sequenceTarget
   sequenceTarget, cursor = Custom.sequenceTarget.read(bytes, cursor)
@@ -147,14 +138,7 @@ function ReadStruct.NiTextKey(bytes: buffer, cursor: number): (Types.NiTextKey, 
   cursor += 4
   local value
   local valueLength = buffer.readu32(bytes, cursor)
-  local valueToken = Spellings:intern(bytes, cursor + 4, valueLength)
-  value = Strings[valueToken]
-
-  if not value then
-    value = Text.cut(bytes, cursor + 4, valueLength)
-    Strings[valueToken] = value
-  end
-
+  value = Text.field(bytes, cursor + 4, valueLength)
   cursor += 4 + valueLength
 
   return { time = time, value = value }, cursor

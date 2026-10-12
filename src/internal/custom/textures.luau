@@ -3,7 +3,7 @@
 -- SPDX-License-Identifier: MIT OR Apache-2.0
 
 local Enums = require '../enums'
-local Strings = require './strings'
+local Text = require '../text'
 local Types = require '../types'
 local Writer = require '../writer'
 
@@ -12,7 +12,15 @@ type Map = { [number]: number }
 type Links = { number }
 
 local Names, Values = Enums.names, Enums.values
-local readString = Strings.read
+
+--- A u32 length and the bytes, cut at the first NUL the way OpenMW reads names and decoded, once
+--- per spelling.
+local function readString(bytes: buffer, cursor: number): (string, number)
+  local length = buffer.readu32(bytes, cursor)
+  if length == 0 then return '', cursor + 4 end
+
+  return Text.field(bytes, cursor + 4, length), cursor + 4 + length
+end
 
 local function enumName(names: { [number]: string }, value: number): string | number
   return names[value] or value

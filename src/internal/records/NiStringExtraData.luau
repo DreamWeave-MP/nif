@@ -9,23 +9,13 @@ local Types = require '../types'
 
 type Record = Types.Record
 
-local Spellings: dream_intern_Pool = Text.pool
-local Strings = Text.decoded
-
 local function read(bytes: buffer, cursor: number, typeName: string): (Record, number)
   local next = buffer.readi32(bytes, cursor)
   local bytesRemaining = buffer.readu32(bytes, cursor + 4)
   cursor += 8
   local value
   local valueLength = buffer.readu32(bytes, cursor)
-  local valueToken = Spellings:intern(bytes, cursor + 4, valueLength)
-  value = Strings[valueToken]
-
-  if not value then
-    value = Text.cut(bytes, cursor + 4, valueLength)
-    Strings[valueToken] = value
-  end
-
+  value = Text.field(bytes, cursor + 4, valueLength)
   cursor += 4 + valueLength
 
   return {

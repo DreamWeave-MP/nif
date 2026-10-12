@@ -8,6 +8,10 @@ Strings files repeat: node names, texture paths, controller targets. A read inte
 Luau string only the first time it sees a spelling; after that the string is a read by token.
 One pool for the process, so a name shared by a thousand files is made once. It only grows,
 by one entry per distinct spelling read, about 50 bytes native plus the string.
+
+The readers call `field` rather than intern where they read: the lowering is compiled at every
+place an intern is written, about three quarters of a millisecond a place, which fifty readers
+with a name each would pay the first time each was used.
 ]]
 
 local bytes = require '@dream/bytes'
@@ -15,24 +19,12 @@ local intern = require '@dream/intern'
 
 local spellings: dream_intern_Pool = intern.new 'exact'
 
---- Each token's string, by token.
-local strings: { string } = {}
 
 --- Each token's text as a record holds it: cut at the first NUL and decoded from Windows-1252.
 --- A spelling with a NUL in it has the text before the NUL, so a reader can intern a field's
 --- whole span and cut it once per spelling, or intern the cut span; both find the same text.
 local Decoded: { string } = {}
 
---- The string `length` bytes from `offset` in `source` spell, made once per spelling.
-local function read(source: buffer, offset: number, length: number): string
-  local token = spellings:intern(source, offset, length)
-  local text = strings[token]
-  if text then return text end
-
-  text = buffer.readstring(source, offset, length)
-  strings[token] = text
-  return text
-end
 
 --- Text in records is Windows-1252, as OpenMW and jess-nif read it: the `length` bytes from
 --- `offset` in `source` as UTF-8. ASCII, nearly all of it, is as it is.
@@ -55,6 +47,18 @@ local function cut(source: buffer, offset: number, length: number): string
   return bytes.decode(raw, 'windows-1252')
 end
 
+--- The text a record's string field holds, `length` bytes from `offset` in `source`: cut at the
+--- first NUL and decoded, made once per spelling.
+local function field(source: buffer, offset: number, length: number): string
+  local token = spellings:intern(source, offset, length)
+  local text = Decoded[token]
+  if text then return text end
+
+  text = cut(source, offset, length)
+  Decoded[token] = text
+  return text
+end
+
 --- Each string's Windows-1252 bytes, by the string: a save writes the same names over and over.
 local encoded: { [string]: string } = {}
 
@@ -72,9 +76,8 @@ end
 
 return table.freeze {
   pool = spellings,
-  strings = strings,
   decoded = Decoded,
-  read = read,
+  field = field,
   decode = decode,
   cut = cut,
   encode = encode,

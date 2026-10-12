@@ -48,8 +48,6 @@ end
 --- Sets the record errors are found in (0-based), or none.
 local function at(record: number?) current = record end
 
-local Spellings: dream_intern_Pool = Text.pool
-local Decoded = Text.decoded
 
 --- `checkStreamSize`: `size` bytes can't be read from a smaller file.
 local function checkSize(stream: Stream, size: number)
@@ -67,14 +65,7 @@ local function sized(stream: Stream, cursor: number, length: number): (string, n
   end
 
   -- The whole field is interned (in native code), and cut and decoded once per spelling.
-  local token = Spellings:intern(bytes, cursor, length)
-  local text = Decoded[token]
-  if not text then
-    text = Text.cut(bytes, cursor, length)
-    Decoded[token] = text
-  end
-
-  return text, cursor + length
+  return Text.field(bytes, cursor, length), cursor + length
 end
 
 --- A string with a `u32` length before it.

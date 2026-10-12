@@ -661,14 +661,10 @@ local function emitRead(out: Out, fields: { Field }, typed: boolean, fill: boole
 
       if kind == 'string' then
         -- Interned whole (`nif/text.luau`): cut at the first NUL, as OpenMW reads names, and
-        -- decoded, once per spelling.
+        -- decoded, once per spelling. A call, not the interning in line: its native lowering is
+        -- compiled wherever it is written, most of what a reader with a name cost to load.
         emit(out, `local {name}Length = buffer.readu32(bytes, cursor)`)
-        emit(out, `local {name}Token = Spellings:intern(bytes, cursor + 4, {name}Length)`)
-        emit(out, `{target} = Strings[{name}Token]`)
-        open(out, `if not {target} then`)
-        emit(out, `{target} = Text.cut(bytes, cursor + 4, {name}Length)`)
-        emit(out, `Strings[{name}Token] = {target}`)
-        close(out)
+        emit(out, `{target} = Text.field(bytes, cursor + 4, {name}Length)`)
         emit(out, `cursor += 4 + {name}Length`)
       elseif isCustom(kind) then
         local args = if field.args then `, {field.args}` else ''
@@ -1319,7 +1315,7 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
     Stash = uses 'Stash',
     Structs = uses 'ReadStruct',
     StructWrites = uses 'WriteStruct' or uses 'StructLinks',
-    Text = uses 'Spellings' or uses 'Text',
+    Text = uses 'Text',
     Types = true,
     Writer = uses 'Writer',
   }
@@ -1356,10 +1352,6 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
 
   if uses 'Identity' then table.insert(out, 'local Identity = Custom.identity') end
 
-  if uses 'Spellings' then
-    table.insert(out, 'local Spellings: dream_intern_Pool = Text.pool')
-    table.insert(out, 'local Strings = Text.decoded')
-  end
 
   for _, line in locals or {} do
     table.insert(out, line)

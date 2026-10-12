@@ -11,20 +11,11 @@ local Types = require '../types'
 type Record = Types.Record
 
 local Names = Enums.names
-local Spellings: dream_intern_Pool = Text.pool
-local Strings = Text.decoded
 
 local function fill(bytes: buffer, cursor: number, typeName: string, into: Record): number
   local name
   local nameLength = buffer.readu32(bytes, cursor)
-  local nameToken = Spellings:intern(bytes, cursor + 4, nameLength)
-  name = Strings[nameToken]
-
-  if not name then
-    name = Text.cut(bytes, cursor + 4, nameLength)
-    Strings[nameToken] = name
-  end
-
+  name = Text.field(bytes, cursor + 4, nameLength)
   cursor += 4 + nameLength
   local extraData = buffer.readi32(bytes, cursor)
   local controller = buffer.readi32(bytes, cursor + 4)
