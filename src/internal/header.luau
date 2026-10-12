@@ -196,9 +196,8 @@ local function parse(bytes: buffer): Header
     -- All at once when they fit; one at a time otherwise, so a short file names where it ends.
     if cursor + count * 2 <= fileSize then
       local at = take(count * 2, 'record type index')
-      for index = 1, count do
-        recordTypeIndices[index] = buffer.readu16(bytes, at + (index - 1) * 2)
-      end
+      recordTypeIndices =
+        [for index in range(1, count) => buffer.readu16(bytes, at + (index - 1) * 2)]
     else
       for index = 1, count do
         recordTypeIndices[index] = u16 'record type index'
@@ -209,9 +208,7 @@ local function parse(bytes: buffer): Header
   if fileVersion >= version(20, 2, 0, 5) then
     if cursor + count * 4 <= fileSize then
       local at = take(count * 4, 'record size')
-      for index = 1, count do
-        recordSizes[index] = buffer.readu32(bytes, at + (index - 1) * 4)
-      end
+      recordSizes = [for index in range(1, count) => buffer.readu32(bytes, at + (index - 1) * 4)]
     else
       for index = 1, count do
         recordSizes[index] = u32 'record size'
@@ -295,11 +292,7 @@ end
 local function roots(header: Header, bytes: buffer): { number }?
   if #header.recordSizes == 0 and header.recordCount > 0 then return nil end
 
-  local cursor = header.size
-  for _, size in header.recordSizes do
-    cursor += size
-  end
-
+  local cursor = header.size + sum[for size in header.recordSizes => size]
   local fileSize = buffer.len(bytes)
   if cursor + 4 > fileSize then return nil end
 
