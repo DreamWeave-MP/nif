@@ -8,7 +8,7 @@ local BSConnectPointTransform = require './BSConnectPointTransform'
 local DefaultStruct = { BSConnectPointTransform = BSConnectPointTransform.default }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion } = stream
+  local {bytes, version, userVersion, bethVersion} = stream
   local parent
   local name
   local transform

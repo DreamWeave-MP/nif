@@ -28,7 +28,7 @@ local DefaultStruct = {
 }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion, recordName } = stream
+  local {bytes, version, userVersion, bethVersion, recordName} = stream
   local type = 0
   local name
   local extra

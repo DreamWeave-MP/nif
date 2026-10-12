@@ -14,7 +14,7 @@ local DefaultStruct = {
 }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion } = stream
+  local {bytes, version, userVersion, bethVersion} = stream
   local dataA
   local dataB
   local coneMaxAngle

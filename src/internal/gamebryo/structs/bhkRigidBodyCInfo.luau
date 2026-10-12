@@ -8,7 +8,7 @@ local HavokFilter = require './HavokFilter'
 local DefaultStruct = { HavokFilter = HavokFilter.default }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion } = stream
+  local {bytes, version, userVersion, bethVersion} = stream
   local havokFilter
   local responseType = 0
   local processContactDelay = 0

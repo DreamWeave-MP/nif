@@ -8,7 +8,7 @@ local BSSkinBoneDataBoneInfo = require '../structs/BSSkinBoneDataBoneInfo'
 local ReadStruct = { BSSkinBoneDataBoneInfo = BSSkinBoneDataBoneInfo.read }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion, recordName } = stream
+  local {bytes, version, userVersion, bethVersion, recordName} = stream
   local bones
 
   do

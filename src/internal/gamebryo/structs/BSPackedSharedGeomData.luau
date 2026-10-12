@@ -9,7 +9,7 @@ local BSPackedGeomDataCombined = require './BSPackedGeomDataCombined'
 local ReadStruct = { BSPackedGeomDataCombined = BSPackedGeomDataCombined.read }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion } = stream
+  local {bytes, version, userVersion, bethVersion} = stream
   local numVertices
   local lodLevels
   local lod0TriCount

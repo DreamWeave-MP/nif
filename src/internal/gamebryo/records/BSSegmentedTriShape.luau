@@ -12,7 +12,7 @@ local ReadStruct = { NiGeometryMaterialData = NiGeometryMaterialData.read }
 local StructRow = { BSSegmentedTriShapeSegmentData = BSSegmentedTriShapeSegmentData.rows }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion, recordName } = stream
+  local {bytes, version, userVersion, bethVersion, recordName} = stream
   local name
   local extra
   local extraList

@@ -8,7 +8,7 @@ local NiTransform = require './NiTransform'
 local DefaultStruct = { NiTransform = NiTransform.default }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion } = stream
+  local {bytes, version, userVersion, bethVersion} = stream
   local grayscaleToPaletteScale
   local transform
   local boundingSphere

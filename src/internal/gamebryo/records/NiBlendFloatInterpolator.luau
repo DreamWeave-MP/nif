@@ -9,7 +9,7 @@ local NiBlendInterpolatorItem = require '../structs/NiBlendInterpolatorItem'
 local ReadStruct = { NiBlendInterpolatorItem = NiBlendInterpolatorItem.read }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion, recordName } = stream
+  local {bytes, version, userVersion, bethVersion, recordName} = stream
   local flags = 0
   local _numItems = 0
   local weightThreshold = 0

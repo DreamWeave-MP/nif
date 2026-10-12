@@ -9,7 +9,7 @@ local ReadStruct = { NiPixelFormatChannelData = NiPixelFormatChannelData.read }
 local DefaultStruct = { NiPixelFormatChannelData = NiPixelFormatChannelData.default }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion } = stream
+  local {bytes, version, userVersion, bethVersion} = stream
   local format
   local colorMasks
   local bitsPerPixel = 0

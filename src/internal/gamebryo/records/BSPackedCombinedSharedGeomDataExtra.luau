@@ -14,7 +14,7 @@ local ReadStruct = { BSPackedSharedGeomData = BSPackedSharedGeomData.read }
 local StructRow = { BSPackedGeomObject = BSPackedGeomObject.rows }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion, recordName } = stream
+  local {bytes, version, userVersion, bethVersion, recordName} = stream
   local name
   local next
   local recordSize

@@ -10,7 +10,7 @@ local ReadStruct = { HavokMaterial = HavokMaterial.read }
 local DefaultStruct = { HavokFilter = HavokFilter.default, HavokMaterial = HavokMaterial.default }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion } = stream
+  local {bytes, version, userVersion, bethVersion} = stream
   local havokFilter
   local numVertices
   local havokMaterial

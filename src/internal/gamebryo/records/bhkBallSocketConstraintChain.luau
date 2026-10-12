@@ -11,7 +11,7 @@ local ReadStruct = { bhkConstraintChainCInfo = bhkConstraintChainCInfo.read }
 local StructRow = { bhkBallAndSocketConstraintCInfo = bhkBallAndSocketConstraintCInfo.rows }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion, recordName } = stream
+  local {bytes, version, userVersion, bethVersion, recordName} = stream
   local _numPivots
   local constraints
   local tau

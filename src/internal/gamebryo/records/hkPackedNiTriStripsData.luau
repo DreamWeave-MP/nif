@@ -11,7 +11,7 @@ local Empties, Metas = Array.empty, Array.metas
 local ReadStruct = { hkSubPartData = hkSubPartData.read }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion, recordName } = stream
+  local {bytes, version, userVersion, bethVersion, recordName} = stream
   local triangles
   local _numVertices
   local _compressed

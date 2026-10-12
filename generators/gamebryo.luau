@@ -754,8 +754,8 @@ end
 
 --- What every reader starts with: the stream's bytes and versions, in locals; a record's reader
 --- its name too.
-local Versions = 'local { bytes, version, userVersion, bethVersion } = stream'
-local NamedVersions = 'local { bytes, version, userVersion, bethVersion, recordName } = stream'
+local Versions = 'local {bytes, version, userVersion, bethVersion} = stream'
+local NamedVersions = 'local {bytes, version, userVersion, bethVersion, recordName} = stream'
 
 local function emitReader(
   out: Out,

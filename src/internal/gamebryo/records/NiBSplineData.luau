@@ -8,7 +8,7 @@ local Stream = require '../stream'
 local Empties, Metas = Array.empty, Array.metas
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion, recordName } = stream
+  local {bytes, version, userVersion, bethVersion, recordName} = stream
   local floatControlPoints
   local compactControlPoints
 

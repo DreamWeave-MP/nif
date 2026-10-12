@@ -9,7 +9,7 @@ local bhkWorldObjectCInfo = require '../structs/bhkWorldObjectCInfo'
 local ReadStruct = { bhkWorldObjectCInfo = bhkWorldObjectCInfo.read }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion, recordName } = stream
+  local {bytes, version, userVersion, bethVersion, recordName} = stream
   local shape
   local havokFilter
   local worldObjectInfo

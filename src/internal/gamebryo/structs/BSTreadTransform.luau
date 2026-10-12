@@ -9,7 +9,7 @@ local ReadStruct = { NiQuatTransform = NiQuatTransform.read }
 local DefaultStruct = { NiQuatTransform = NiQuatTransform.default }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion } = stream
+  local {bytes, version, userVersion, bethVersion} = stream
   local name
   local transform1
   local transform2

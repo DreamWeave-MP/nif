@@ -7,7 +7,7 @@ local Custom = require '../custom'
 local Stream = require '../stream'
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion } = stream
+  local {bytes, version, userVersion, bethVersion} = stream
   local textureArrays
   cursor = Stream.skip(stream, cursor, 1)
   textureArrays, cursor = Custom.stringLists(stream, cursor)

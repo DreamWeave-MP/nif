@@ -6,7 +6,7 @@
 local Stream = require '../stream'
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion } = stream
+  local {bytes, version, userVersion, bethVersion} = stream
   local minRange
   local maxRange
   minRange = buffer.readf32(bytes, cursor)

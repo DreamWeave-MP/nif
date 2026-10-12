@@ -7,7 +7,7 @@ local Custom = require '../custom'
 local Stream = require '../stream'
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion, recordName } = stream
+  local {bytes, version, userVersion, bethVersion, recordName} = stream
   local keyMap
   keyMap, cursor = Custom.vec4Keys(stream, cursor)
 

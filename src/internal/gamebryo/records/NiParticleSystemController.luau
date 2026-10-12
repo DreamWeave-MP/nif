@@ -9,7 +9,7 @@ local NiParticleInfo = require '../structs/NiParticleInfo'
 local ReadStruct = { NiParticleInfo = NiParticleInfo.read }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion, recordName } = stream
+  local {bytes, version, userVersion, bethVersion, recordName} = stream
   local next
   local flags
   local frequency

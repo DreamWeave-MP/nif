@@ -8,7 +8,7 @@ local bhkWorldObjCInfoProperty = require './bhkWorldObjCInfoProperty'
 local DefaultStruct = { bhkWorldObjCInfoProperty = bhkWorldObjCInfoProperty.default }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion } = stream
+  local {bytes, version, userVersion, bethVersion} = stream
   local phaseType
   local property
   cursor = Stream.skip(stream, cursor, 4)

@@ -10,7 +10,7 @@ local Empties, Metas = Array.empty, Array.metas
 local ReadStruct = { HavokMaterial = HavokMaterial.read }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion, recordName } = stream
+  local {bytes, version, userVersion, bethVersion, recordName} = stream
   local havokMaterial
   local radius
   local verticesProperty

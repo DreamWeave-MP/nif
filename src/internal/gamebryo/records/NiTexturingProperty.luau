@@ -10,7 +10,7 @@ local NiTexturingPropertyTexture = require '../structs/NiTexturingPropertyTextur
 local ReadStruct = { NiTexturingPropertyTexture = NiTexturingPropertyTexture.read }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion, recordName } = stream
+  local {bytes, version, userVersion, bethVersion, recordName} = stream
   local name
   local extra
   local extraList

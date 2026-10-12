@@ -7,7 +7,7 @@ local Stream = require '../stream'
 local Links = require '../links'
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion, recordName } = stream
+  local {bytes, version, userVersion, bethVersion, recordName} = stream
   local next
   local controller
   local range

@@ -9,7 +9,7 @@ local bhkConstraintCInfo = require '../structs/bhkConstraintCInfo'
 local ReadStruct = { bhkConstraintCInfo = bhkConstraintCInfo.read }
 
 local function read(stream: Stream.Stream, cursor: number): (any, number)
-  local { bytes, version, userVersion, bethVersion, recordName } = stream
+  local {bytes, version, userVersion, bethVersion, recordName} = stream
   local info
   local constraint
   info, cursor = ReadStruct.bhkConstraintCInfo(stream, cursor)
