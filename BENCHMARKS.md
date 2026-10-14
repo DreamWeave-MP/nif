@@ -1,19 +1,19 @@
 # NIF benchmarks
 
-`bench/bench.luau` times the package through its public modules: opening, decoding, reading
+`bench/bench.jsl` times the package through its public modules: opening, decoding, reading
 through one table, dumping, the array views, saving, the checker, the scene, the tree, the fixes,
 and the multi-version reader, on the suite's two files (`all_types.nif`, every record type once,
 16 KB; `random_objects.nif`, eight shapes, 233 KB) and on files built in the bench for what those
 two don't hold: a grid of 4,096 vertices as strips, the same grid skinned to eight bones, and the
 geometry an edit derives. A warm workload is warmed up, sized to a batch of about a tenth of a
 second, and reported as the median of seven batches with a full collection between them. A
-`cold:` workload is the median of seven fresh processes running `bench/cold.luau`, timed inside
+`cold:` workload is the median of seven fresh processes running `bench/cold.jsl`, timed inside
 the script from its first `require`: what a tool that runs once pays, most of it compiling the
 modules it needs. Every call's answer is compared with one pinned in the file.
 
 ```sh
 jess run --capability filesystem.read --capability process.spawn \
-  --package jpk/nif --package-path jpk jpk/nif/bench/bench.luau [filter] [jess binary]
+  --package jpk/nif --package-path jpk jpk/nif/bench/bench.jsl [filter] [jess binary]
 ```
 
 Without the binary (and `process.spawn`) the cold workloads are skipped.
@@ -161,7 +161,7 @@ The dialect itself has a price at load that the warm rows don't show: the first 
 reducer, or slice in a module adds 0.2 to 0.7 ms to compiling it (a record pattern adds
 nothing). In the checker, the scene, the tree, the fixes, and the header that is paid once by
 the tool that uses them, and they are written with it. In the three modules every
-`require '@nif'` loads (`init.luau`, `writer.luau`, `custom_scan.luau`) it was 1.4 ms of a 17 ms
+`require '@nif'` loads (`init.jsl`, `writer.jsl`, `custom_scan.jsl`) it was 1.4 ms of a 17 ms
 require for six constructs in code that runs once a save or once a load, and those are loops
 again.
 

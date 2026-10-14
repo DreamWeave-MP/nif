@@ -5,16 +5,16 @@ id = "org.dreamweave.nif"
 version = "0.1.0"
 jess_api = "1"
 include = ["src"]
-tests = ["tests/run.luau"]
+tests = ["tests/run.jsl"]
 
 [modules]
-"@nif" = "src/init.luau"
-"@nif/check" = "src/internal/check.luau"
-"@nif/fix" = "src/internal/fix.luau"
-"@nif/gamebryo" = "src/internal/gamebryo/reader.luau"
-"@nif/header" = "src/internal/header.luau"
-"@nif/info" = "src/internal/info.luau"
-"@nif/scene" = "src/internal/scene.luau"
+"@nif" = "src/init.jsl"
+"@nif/check" = "src/internal/check.jsl"
+"@nif/fix" = "src/internal/fix.jsl"
+"@nif/gamebryo" = "src/internal/gamebryo/reader.jsl"
+"@nif/header" = "src/internal/header.jsl"
+"@nif/info" = "src/internal/info.jsl"
+"@nif/scene" = "src/internal/scene.jsl"
 
 # Every module here is inert API: it does nothing until something requires it, and runs with the
 # authority of whatever calls it. The layer has no entrypoints, so it requires no capability.
