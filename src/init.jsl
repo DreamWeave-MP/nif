@@ -18,6 +18,7 @@ local Scan = require '@self/internal/scan'
 local Types = require '@self/internal/types'
 local Writer = require '@self/internal/writer'
 
+local bytes = require '@dream/bytes'
 local intern = require '@dream/intern'
 
 local Header = 'NetImmerse File Format, Version 4.0.0.2\n'
@@ -366,7 +367,7 @@ function Nif.find(self: Nif, spec: { type: (string | { string })?, name: string?
     end
   end
 
-  local pattern = if spec and spec.name then jess.regex.new('(?i)' .. spec.name) else nil
+  local pattern = if spec and spec.name then bytes.regex('(?i)' .. spec.name) else nil
   local found = {}
   for index = 0, self.count - 1 do
     local name = self:typeOf(index)

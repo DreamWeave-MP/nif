@@ -4,6 +4,7 @@
 -- the files the cases make by hand, and the canonical digest the NIF port campaign's goldens
 -- were recorded with (its `golden.jsl`), which is why `golden/nif.txt` still holds here.
 local bytes = require '@dream/bytes'
+local fs = require '@dream/fs'
 
 --- Where this file is, from its chunk name: the folder the suite, assets, and goldens are in.
 local function here(): string
@@ -17,7 +18,7 @@ local Here = here()
 
 local function read(relative: string): string
   local path = `{Here}/{relative}`
-  return jess.fs.read(path) or error(`can't read {path}`, 0)
+  return fs.readFileString(path) or error(`can't read {path}`, 0)
 end
 
 --- A test asset's bytes, by file name.

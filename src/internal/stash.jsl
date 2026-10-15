@@ -7,4 +7,5 @@
 --- reads what its record left.
 local Stash: { [string]: number } = {}
 
-return Stash
+-- Written by the modules that require it, so it is `values`: a package module's export is frozen.
+return table.freeze { values = Stash }

@@ -1,5 +1,6 @@
 --!strict
 -- SPDX-License-Identifier: MIT OR Apache-2.0
+local fs = require '@dream/fs'
 
 --[[
 One process of the bench's cold workloads: what a tool that runs once pays for one file from its
@@ -13,7 +14,7 @@ processes a workload.
 
 local started = os.clock()
 local workload: string, path: string = ...
-local bytes = jess.fs.read(path)
+local bytes = fs.readFileString(path)
 local answer = 0
 
 if workload == 'decode' then

@@ -5,7 +5,7 @@
 
 local Array = require './array'
 local Custom = require './custom'
-local Stash = require './stash'
+local Stash = require('./stash').values
 local Text = require './text'
 local Types = require './types'
 

@@ -50,6 +50,7 @@ field with a `count`, `list`, or `fixed` is a list of links, checked like `links
 local Classes = require '../src/internal/gamebryo/classes'
 local Layout = require './layout'
 local Schema = require './gamebryo_schema'
+local fs = require '@dream/fs'
 
 -- Each part registers its header's classes and structs.
 require './gamebryo/base'
@@ -1012,14 +1013,21 @@ end
 
 --- Writes `texts`, by module name, as the modules of `folder`, and removes any other file there.
 local function writeModules(folder: string, texts: { [string]: string })
-  if not jess.fs.isDir(folder) then jess.fs.createDir(folder) end
-
-  for name, text in texts do
-    jess.fs.write(jess.fs.join(folder, `{name}.jsl`), text)
+  if not fs.isDir(folder) then
+    local done, problem = fs.mkdir(folder, { recursive = true })
+    if not done then error(problem, 0) end
   end
 
-  for _, file in jess.fs.list(folder) do
-    if not texts[string.sub(file, 1, -6)] then jess.fs.remove(jess.fs.join(folder, file)) end
+  for name, text in texts do
+    local done, problem = fs.writeFile(fs.join(folder, `{name}.jsl`), text, { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
+  end
+
+  local names, problem = fs.list(folder)
+  if not names then error(problem, 0) end
+
+  for _, file in names do
+    if not texts[string.sub(file, 1, -6)] then fs.remove(fs.join(folder, file)) end
   end
 end
 
@@ -1028,7 +1036,7 @@ for _, name in sorted(Schema.structs) do
   structs[name] = structModule(name)
 end
 
-writeModules(jess.fs.join(outDir, 'structs'), structs)
+writeModules(fs.join(outDir, 'structs'), structs)
 local written, missing = 0, {}
 for _, class in sorted(concrete) do
   if not Schema.classes[class] then
@@ -1036,7 +1044,8 @@ for _, class in sorted(concrete) do
     continue
   end
 
-  jess.fs.write(jess.fs.join(outDir, 'records', `{class}.jsl`), recordModule(class))
+  local done, problem = fs.writeFile(fs.join(outDir, 'records', `{class}.jsl`), recordModule(class), { atomic = true, createParents = true })
+  if not done then error(problem, 0) end
   written += 1
 end
 
@@ -1064,15 +1073,20 @@ for _, line in
   {
     '}',
     '',
-    '--- Each record class\'s codec, required the first time a record of it is read.',
+    '--- Each record class\'s codec, required the first time a record of it is read. The export is',
+    '--- frozen, so what has loaded is kept in `loaded`.',
+    'local loaded = {}',
     'local Codecs = setmetatable({}, {',
-    '  __index = function(codecs, class)',
+    '  __index = function(_, class)',
+    '    local found = loaded[class]',
+    '    if found then return found end',
+    '',
     '    local codec = Requires[class]',
     '    if not codec then return nil end',
     '',
-    '    local loaded = codec()',
-    '    rawset(codecs, class, loaded)',
-    '    return loaded',
+    '    found = codec()',
+    '    loaded[class] = found',
+    '    return found',
     '  end,',
     '})',
     '',
@@ -1082,5 +1096,6 @@ do
   table.insert(load, line)
 end
 
-jess.fs.write(jess.fs.join(outDir, 'load.jsl'), table.concat(load, '\n') .. '\n')
+local done, problem = fs.writeFile(fs.join(outDir, 'load.jsl'), table.concat(load, '\n') .. '\n', { atomic = true, createParents = true })
+if not done then error(problem, 0) end
 print(`wrote structs/, load, and {written} record classes; {#missing} classes have no schema yet`)

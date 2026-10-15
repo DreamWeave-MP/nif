@@ -6,4 +6,5 @@
 --- Values a scanner leaves for a later field, or for the scanner of a struct it holds.
 local Stash: { [string]: number } = {}
 
-return Stash
+-- Written by the modules that require it, so it is `values`: a package module's export is frozen.
+return table.freeze { values = Stash }

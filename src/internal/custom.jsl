@@ -72,17 +72,20 @@ type Custom = typeof(require './custom/keys')
 local Loaded: Part = { identity = Identity, enumValue = enumValue }
 local Meta = {}
 
---- A codec not asked for before: its module's codecs all go in the table, where the next read
---- of any of them finds a plain field.
-function Meta.__index(loaded: Part, name: string): unknown
+--- A codec not asked for before: its module's codecs all go in `Loaded`, where the next read of
+--- any of them finds it. The export is frozen, so `Loaded` is a table of its own behind it.
+function Meta.__index(_: Part, name: string): unknown
+  local found = Loaded[name]
+  if found ~= nil then return found end
+
   local part = Parts[name]
   if not part then return nil end
 
   for key, codec in part() do
-    loaded[key] = codec
+    Loaded[key] = codec
   end
 
-  return rawget(loaded, name)
+  return Loaded[name]
 end
 
-return (setmetatable(Loaded, Meta) :: unknown) :: Custom
+return (setmetatable({}, Meta) :: unknown) :: Custom

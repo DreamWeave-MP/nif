@@ -39,20 +39,24 @@ local Meta = {}
 local required = 0
 
 --- A name not asked for before: the parts not yet required are, one at a time, until one holds
---- it. Their names all go in the table, where the next read of any of them finds a plain field.
-function Meta.__index(loaded: Part, name: string): unknown
+--- it. Their names all go in `Loaded`, where the next read of any of them finds it; the export is
+--- frozen, so `Loaded` is a table of its own behind it.
+function Meta.__index(_: Part, name: string): unknown
+  local known = Loaded[name]
+  if known ~= nil then return known end
+
   while required < #Parts do
     required += 1
     for key, value in Parts[required]() do
-      assert(rawget(loaded, key) == nil, `custom {key} is defined twice`)
-      loaded[key] = value
+      assert(Loaded[key] == nil, `custom {key} is defined twice`)
+      Loaded[key] = value
     end
 
-    local found = rawget(loaded, name)
+    local found = Loaded[name]
     if found ~= nil then return found end
   end
 
   return nil
 end
 
-return (setmetatable(Loaded, Meta) :: unknown) :: Custom
+return (setmetatable({}, Meta) :: unknown) :: Custom

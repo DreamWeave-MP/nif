@@ -1,5 +1,6 @@
 --!strict
 -- SPDX-License-Identifier: MIT OR Apache-2.0
+local fs = require '@dream/fs'
 
 --[[
 Reads OpenMW's NIF reader (`components/nif`) for what the multi-version reader needs from it as
@@ -19,12 +20,14 @@ if not openmw or not outDir then
   error('usage: openmw.jsl <openmw checkout> <output folder>', 0)
 end
 
-local nifDir = jess.fs.join(openmw, 'components', 'nif')
-local headers = [for name in jess.fs.list(nifDir) if string.sub(name, -4) == '.hpp' => name]
+local nifDir = fs.join(openmw, 'components', 'nif')
+local listed, problem = fs.list(nifDir)
+if not listed then error(problem, 0) end
+local headers = [for name in listed if string.sub(name, -4) == '.hpp' => name]
 table.sort(headers)
 
 local function read(name: string): string
-  return jess.fs.read(jess.fs.join(nifDir, name)) or error(`can't read {name}`, 0)
+  return fs.readFileString(fs.join(nifDir, name)) or error(`can't read {name}`, 0)
 end
 
 local function lines(text: string): { string }
@@ -194,5 +197,6 @@ do
   table.insert(out, line)
 end
 
-jess.fs.write(jess.fs.join(outDir, 'classes.jsl'), table.concat(out, '\n') .. '\n')
+local done, problem = fs.writeFile(fs.join(outDir, 'classes.jsl'), table.concat(out, '\n') .. '\n', { atomic = true, createParents = true })
+if not done then error(problem, 0) end
 print(`{#classes} classes, {#factory} factory entries, {#recordTypes} record types`)

@@ -210,12 +210,16 @@ Load.NiAlphaAccumulator = Load.NiObject
 Load.NiRenderer = Load.NiObject
 Load.NiDX8Renderer = Load.NiObject
 
---- Codecs by record type name: a plain read once a type's module has loaded, which the first
---- read of any name `scan.jsl` knows does.
+--- Codecs by record type name: a type's module loads with the first read of a name `scan.jsl`
+--- knows. The export is frozen, so what has loaded is kept in `loaded`.
+local loaded: { [string]: Codec } = {}
 local Codecs: { [string]: Codec } = setmetatable({}, {
-  __index = function(codecs: { [string]: Codec }, name: string): Codec
-    local codec = Load[name]()
-    rawset(codecs, name, codec)
+  __index = function(_: { [string]: Codec }, name: string): Codec
+    local codec = loaded[name]
+    if codec then return codec end
+
+    codec = Load[name]()
+    loaded[name] = codec
     return codec
   end,
 })

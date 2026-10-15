@@ -323,15 +323,20 @@ local Requires = {
   hkPackedNiTriStripsData = function() return require './records/hkPackedNiTriStripsData' end,
 }
 
---- Each record class's codec, required the first time a record of it is read.
+--- Each record class's codec, required the first time a record of it is read. The export is
+--- frozen, so what has loaded is kept in `loaded`.
+local loaded = {}
 local Codecs = setmetatable({}, {
-  __index = function(codecs, class)
+  __index = function(_, class)
+    local found = loaded[class]
+    if found then return found end
+
     local codec = Requires[class]
     if not codec then return nil end
 
-    local loaded = codec()
-    rawset(codecs, class, loaded)
-    return loaded
+    found = codec()
+    loaded[class] = found
+    return found
   end,
 })
 

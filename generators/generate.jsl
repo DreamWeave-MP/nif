@@ -28,6 +28,7 @@ links into `links`, `linkCount` of them so far.
 
 local Layout = require './layout'
 local Schema = require './schema'
+local fs = require '@dream/fs'
 
 type Field = Schema.Field
 type Definition = Schema.Definition
@@ -1148,7 +1149,7 @@ local function scannerModule(body: { string }): string
 
   if uses 'Custom' then table.insert(out, 'local Custom = require \'../custom_scan\'') end
 
-  if uses 'Stash' then table.insert(out, 'local Stash = require \'../scan_stash\'') end
+  if uses 'Stash' then table.insert(out, 'local Stash = require(\'../scan_stash\').values') end
 
   if #out > 5 then table.insert(out, '') end
 
@@ -1273,7 +1274,8 @@ local function scanStashModule(): string
     '--- Values a scanner leaves for a later field, or for the scanner of a struct it holds.',
     'local Stash: { [string]: number } = {}',
     '',
-    'return Stash',
+    '-- Written by the modules that require it, so it is `values`: a package module\'s export is frozen.',
+    'return table.freeze { values = Stash }',
   })
   return table.concat(out.lines, '\n') .. '\n'
 end
@@ -1321,9 +1323,11 @@ local function codecModule(body: { string }, prefix: string, locals: { string }?
   }
 
   for _, module in modules do
-    if needs[module[1]] then
-      table.insert(out, `local {module[1]} = require '{prefix}{module[2]}'`)
-    end
+    if not needs[module[1]] then continue end
+
+    -- A stash is written by the modules that require it, so it is its export's `values`.
+    local required = if module[1] == 'Stash' then `('{prefix}{module[2]}').values` else ` '{prefix}{module[2]}'`
+    table.insert(out, `local {module[1]} = require{required}`)
   end
 
   local aliases = {
@@ -1419,7 +1423,8 @@ local function stashModule(): string
     '--- reads what its record left.',
     'local Stash: { [string]: number } = {}',
     '',
-    'return Stash',
+    '-- Written by the modules that require it, so it is `values`: a package module\'s export is frozen.',
+    'return table.freeze { values = Stash }',
   })
   return table.concat(out.lines, '\n') .. '\n'
 end
@@ -1540,24 +1545,28 @@ local function codecHelperModule(): string
     '  fill: () -> Fill,',
     '  saving: () -> { write: Write, links: Links }',
     '): Codec',
-    '  local parts: Parts = { read = read }',
+    '  -- The codec is what a type\'s module returns, so it is frozen: what loads after `read` is kept',
+    '  -- in `loaded`, beside it.',
+    '  local loaded: Parts = {}',
     '  local meta = {}',
     '',
     '  function meta.__index(_: Parts, part: string): unknown',
+    '    local found = loaded[part]',
+    '    if found ~= nil then return found end',
+    '',
     '    if part == \'fill\' then',
-    '      local loaded = fill()',
-    '      parts.fill = loaded',
-    '      return loaded',
+    '      loaded.fill = fill()',
+    '      return loaded.fill',
     '    end',
     '',
     '    if part ~= \'write\' and part ~= \'links\' then return nil end',
     '',
-    '    local loaded = saving()',
-    '    parts.write, parts.links = loaded.write, loaded.links',
-    '    return if part == \'write\' then loaded.write else loaded.links',
+    '    local saved = saving()',
+    '    loaded.write, loaded.links = saved.write, saved.links',
+    '    return loaded[part]',
     '  end',
     '',
-    '  return (setmetatable(parts, meta) :: unknown) :: Codec',
+    '  return (setmetatable({ read = read }, meta) :: unknown) :: Codec',
     'end',
     '',
     'return table.freeze { lazy = lazy }',
@@ -1617,12 +1626,16 @@ local function loadModule(): string
 
   blank(out)
   lines(out, {
-    '--- Codecs by record type name: a plain read once a type\'s module has loaded, which the first',
-    '--- read of any name `scan.jsl` knows does.',
+    '--- Codecs by record type name: a type\'s module loads with the first read of a name `scan.jsl`',
+    '--- knows. The export is frozen, so what has loaded is kept in `loaded`.',
+    'local loaded: { [string]: Codec } = {}',
     'local Codecs: { [string]: Codec } = setmetatable({}, {',
-    '  __index = function(codecs: { [string]: Codec }, name: string): Codec',
-    '    local codec = Load[name]()',
-    '    rawset(codecs, name, codec)',
+    '  __index = function(_: { [string]: Codec }, name: string): Codec',
+    '    local codec = loaded[name]',
+    '    if codec then return codec end',
+    '',
+    '    codec = Load[name]()',
+    '    loaded[name] = codec',
     '    return codec',
     '  end,',
     '})',
@@ -2190,14 +2203,17 @@ end
 
 --- Where each of a record type's modules goes.
 local RecordDirs: RecordModules = table.freeze {
-  read = jess.fs.join(outDir, 'records'),
-  fill = jess.fs.join(outDir, 'fills'),
-  write = jess.fs.join(outDir, 'writes'),
+  read = fs.join(outDir, 'records'),
+  fill = fs.join(outDir, 'fills'),
+  write = fs.join(outDir, 'writes'),
 }
 
 local written: { [string]: boolean } = {}
 for _, folder in RecordDirs :: { [string]: string } do
-  if not jess.fs.isDir(folder) then jess.fs.createDir(folder) end
+  if not fs.isDir(folder) then
+    local done, problem = fs.mkdir(folder, { recursive = true })
+    if not done then error(problem, 0) end
+  end
 end
 
 for _, entry in Schema.Records do
@@ -2206,13 +2222,17 @@ for _, entry in Schema.Records do
   local file = `{entry.name}.jsl`
   written[file] = true
   for part, text in recordModules(entry.name, entry.definition) :: { [string]: string } do
-    jess.fs.write(jess.fs.join((RecordDirs :: { [string]: string })[part], file), text)
+    local done, problem = fs.writeFile(fs.join((RecordDirs :: { [string]: string })[part], file), text, { atomic = true, createParents = true })
+    if not done then error(problem, 0) end
   end
 end
 
 for _, folder in RecordDirs :: { [string]: string } do
-  for _, file in jess.fs.list(folder) do
-    if not written[file] then jess.fs.remove(jess.fs.join(folder, file)) end
+  local names, problem = fs.list(folder)
+  if not names then error(problem, 0) end
+
+  for _, file in names do
+    if not written[file] then fs.remove(fs.join(folder, file)) end
   end
 end
 
@@ -2270,49 +2290,75 @@ local function classesModule(): string
   return table.concat(out, '\n') .. '\n'
 end
 
-jess.fs.write(jess.fs.join(outDir, 'classes.jsl'), classesModule())
+local done, problem = fs.writeFile(fs.join(outDir, 'classes.jsl'), classesModule(), { atomic = true, createParents = true })
+if not done then error(problem, 0) end
 local scans = scanModules()
-jess.fs.write(jess.fs.join(outDir, 'scan.jsl'), scans.index)
-jess.fs.write(jess.fs.join(outDir, 'scan_stash.jsl'), scanStashModule())
+local done, problem = fs.writeFile(fs.join(outDir, 'scan.jsl'), scans.index, { atomic = true, createParents = true })
+if not done then error(problem, 0) end
+local done, problem = fs.writeFile(fs.join(outDir, 'scan_stash.jsl'), scanStashModule(), { atomic = true, createParents = true })
+if not done then error(problem, 0) end
 
-local scansDir = jess.fs.join(outDir, 'scans')
-if not jess.fs.isDir(scansDir) then jess.fs.createDir(scansDir) end
-
-for name, text in scans.scanners do
-  jess.fs.write(jess.fs.join(scansDir, `{name}.jsl`), text)
+local scansDir = fs.join(outDir, 'scans')
+if not fs.isDir(scansDir) then
+  local done, problem = fs.mkdir(scansDir, { recursive = true })
+  if not done then error(problem, 0) end
 end
 
-for _, file in jess.fs.list(scansDir) do
+for name, text in scans.scanners do
+  local done, problem = fs.writeFile(fs.join(scansDir, `{name}.jsl`), text, { atomic = true, createParents = true })
+  if not done then error(problem, 0) end
+end
+
+local names, problem = fs.list(scansDir)
+if not names then error(problem, 0) end
+
+for _, file in names do
   if not scans.scanners[string.gsub(file, '%.jsl$', '')] then
-    jess.fs.remove(jess.fs.join(scansDir, file))
+    fs.remove(fs.join(scansDir, file))
   end
 end
 
 local structs = structsModules()
-jess.fs.write(jess.fs.join(outDir, 'structs.jsl'), structs.read)
-jess.fs.write(jess.fs.join(outDir, 'struct_writes.jsl'), structs.write)
-jess.fs.write(jess.fs.join(outDir, 'stash.jsl'), stashModule())
-jess.fs.write(jess.fs.join(outDir, 'load.jsl'), loadModule())
-jess.fs.write(jess.fs.join(outDir, 'codec.jsl'), codecHelperModule())
-jess.fs.write(jess.fs.join(outDir, 'enums.jsl'), enums())
-jess.fs.write(jess.fs.join(outDir, 'array_types.jsl'), arrayTypes())
-jess.fs.write(jess.fs.join(outDir, 'array_access.jsl'), arrayAccess())
+local done, problem = fs.writeFile(fs.join(outDir, 'structs.jsl'), structs.read, { atomic = true, createParents = true })
+if not done then error(problem, 0) end
+local done, problem = fs.writeFile(fs.join(outDir, 'struct_writes.jsl'), structs.write, { atomic = true, createParents = true })
+if not done then error(problem, 0) end
+local done, problem = fs.writeFile(fs.join(outDir, 'stash.jsl'), stashModule(), { atomic = true, createParents = true })
+if not done then error(problem, 0) end
+local done, problem = fs.writeFile(fs.join(outDir, 'load.jsl'), loadModule(), { atomic = true, createParents = true })
+if not done then error(problem, 0) end
+local done, problem = fs.writeFile(fs.join(outDir, 'codec.jsl'), codecHelperModule(), { atomic = true, createParents = true })
+if not done then error(problem, 0) end
+local done, problem = fs.writeFile(fs.join(outDir, 'enums.jsl'), enums(), { atomic = true, createParents = true })
+if not done then error(problem, 0) end
+local done, problem = fs.writeFile(fs.join(outDir, 'array_types.jsl'), arrayTypes(), { atomic = true, createParents = true })
+if not done then error(problem, 0) end
+local done, problem = fs.writeFile(fs.join(outDir, 'array_access.jsl'), arrayAccess(), { atomic = true, createParents = true })
+if not done then error(problem, 0) end
 
-local arraysDir = jess.fs.join(outDir, 'arrays')
+local arraysDir = fs.join(outDir, 'arrays')
 local arrays: { [string]: boolean } = {}
-if not jess.fs.isDir(arraysDir) then jess.fs.createDir(arraysDir) end
+if not fs.isDir(arraysDir) then
+  local done, problem = fs.mkdir(arraysDir, { recursive = true })
+  if not done then error(problem, 0) end
+end
 
 for _, kind in Schema.ArrayKinds do
   local file = `{kind.kind}.jsl`
   arrays[file] = true
-  jess.fs.write(jess.fs.join(arraysDir, file), arrayKindModule(kind))
+  local done, problem = fs.writeFile(fs.join(arraysDir, file), arrayKindModule(kind), { atomic = true, createParents = true })
+  if not done then error(problem, 0) end
 end
 
-for _, file in jess.fs.list(arraysDir) do
-  if not arrays[file] then jess.fs.remove(jess.fs.join(arraysDir, file)) end
+local names, problem = fs.list(arraysDir)
+if not names then error(problem, 0) end
+
+for _, file in names do
+  if not arrays[file] then fs.remove(fs.join(arraysDir, file)) end
 end
 
-jess.fs.write(jess.fs.join(outDir, 'types.jsl'), types())
+local done, problem = fs.writeFile(fs.join(outDir, 'types.jsl'), types(), { atomic = true, createParents = true })
+if not done then error(problem, 0) end
 print(
   'wrote scan, scan_stash, scans/, structs, struct_writes, stash, load, codec, enums, types,'
     .. ` array_types, array_access, arrays/, records/, fills/, and writes/ in {outDir}`
