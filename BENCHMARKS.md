@@ -189,3 +189,82 @@ is the lucky case rather than the usual one: with only one of the two thresholds
 sides take 117 to 131 µs for that row. A process that saves many files of this size can land on
 either side with either version of the package. What would settle it is Jess keeping freed pages
 for every script it runs, which is not this package's to do.
+
+## Which modules are native, and why
+
+Jess compiles to machine code only what is marked (`--!native` on a module, `@native` on one
+function), and every load pays for what is marked. A module carries `--!native` when a row below
+spends its time there and the module is small (12 KB or less); a larger module carries `@native`
+on the functions the row spends its time in, and nothing else.
+
+Measured 2026-10-15 with `jess 0.1.0`, the verified release build of jess `07c38cb` on l3i
+2.0.3, on the i7-10870H, the one-minute load 1.38 and 1.47 at the start of the two
+sessions. In each session the bench ran alternately on this package and on a copy of it with
+every module marked, three fresh runs of `bench/bench.jsl` each, every run's row the median of
+its batches; a column is the median of the three, and a ratio is against the all-marked runs of
+the same session. Which functions a row spends its time in comes from `jess run --profile` of
+that row alone, unmarked. The load cost is a fresh `jess run --package <this package>
+--package-path jpk` of a script that only requires `@nif`, the two sides alternating, the
+median of five each after one warm-up.
+
+| Requiring `@nif` | All marked | This state |
+| --- | ---: | ---: |
+| Unmarked | 0.090 s | 0.074 s |
+| Final | 0.095 s | 0.089 s |
+
+| Row | All marked (ms) | Unmarked / all marked | Final (ms) | Final / all marked |
+| --- | ---: | ---: | ---: | ---: |
+| all_types open | 0.01449 | **2.737×** | 0.02447 | **1.688×** |
+| all_types open + decode | 0.1169 | **1.752×** | 0.1738 | **1.486×** |
+| all_types read into one table a type | 0.06878 | **1.852×** | 0.09837 | **1.430×** |
+| all_types open + dump | 0.1467 | **1.644×** | 0.1973 | **1.345×** |
+| all_types get every element of 67 views | 0.07131 | **2.087×** | 0.07699 | **1.080×** |
+| all_types toTable of 67 views | 0.02535 | **2.218×** | 0.02867 | **1.131×** |
+| all_types open + save untouched | 0.03290 | **2.368×** | 0.04240 | **1.289×** |
+| all_types open + decode + save | 0.2745 | **1.629×** | 0.3547 | **1.292×** |
+| all_types check | 0.01081 | **1.451×** | 0.01218 | **1.127×** |
+| all_types scene | 0.2032 | **1.719×** | 0.2699 | **1.328×** |
+| all_types scene dump | 0.06850 | **1.229×** | 0.06986 | 1.020× |
+| all_types tree and type counts | 0.2175 | **1.658×** | 0.2667 | **1.226×** |
+| all_types open + fix + save | 0.1531 | **1.900×** | 0.1982 | **1.294×** |
+| all_types header | 0.00091 | **2.231×** | 0.00094 | 1.032× |
+| random_objects open | 0.00358 | **3.208×** | 0.00394 | **1.102×** |
+| random_objects open + decode | 0.01918 | **2.330×** | 0.02589 | **1.350×** |
+| random_objects read into one table a type | 0.01040 | **2.488×** | 0.01100 | **1.057×** |
+| random_objects open + dump | 0.02645 | **2.051×** | 0.02932 | **1.108×** |
+| random_objects get every element of 29 views | 1.239 | **2.718×** | 1.235 | 0.997× |
+| random_objects toTable of 29 views | 0.2992 | **3.882×** | 0.3153 | **1.054×** |
+| random_objects open + save untouched | 0.09224 | **1.115×** | 0.08751 | 0.949× |
+| random_objects open + decode + save | 0.1319 | **1.383×** | 0.1452 | **1.101×** |
+| random_objects check | 0.1201 | **1.820×** | 0.1819 | **1.515×** |
+| random_objects scene | 0.1838 | **1.339×** | 0.1949 | **1.060×** |
+| random_objects scene dump | 0.04449 | **1.238×** | 0.04177 | 0.939× |
+| random_objects tree and type counts | 0.05210 | **1.918×** | 0.05547 | **1.065×** |
+| random_objects open + fix + save | 0.1388 | **1.154×** | 0.1262 | 0.909× |
+| random_objects header | 0.00099 | **2.226×** | 0.00094 | 0.949× |
+| random_objects multi-version open | 0.03005 | **2.341×** | 0.04806 | **1.599×** |
+| random_objects multi-version open + read every list | 0.04543 | **1.916×** | 0.06336 | **1.394×** |
+| random_objects multi-version tree | 0.05334 | **2.071×** | 0.07367 | **1.381×** |
+| built strips check | 0.1830 | **7.767×** | 0.2418 | **1.321×** |
+| built strips scene | 0.2290 | **4.856×** | 0.2513 | **1.097×** |
+| built strips tree | 0.01228 | **2.212×** | 0.01459 | **1.188×** |
+| built skin check | 0.1244 | **1.638×** | 0.1672 | **1.345×** |
+| built skin scene | 0.3110 | **3.829×** | 0.3462 | **1.113×** |
+| built skin fix | 0.05747 | **1.590×** | 0.07697 | **1.339×** |
+| build a shape of 4096 vertices | 0.8343 | **6.397×** | 0.8487 | 1.017× |
+| random_objects update bounds | 0.2603 | **4.913×** | 0.2671 | 1.026× |
+| random_objects compute normals | 0.5221 | **6.332×** | 0.5294 | 1.014× |
+
+What carries the directive: every module, as before this pass.
+
+The rows below time small test files, a handful of NIF types each, and marking only what their
+profiles named (the readers, the arrays, the scene and check, the few per-type decoders those files
+use) saved 0.006 s a load. Real meshes decide it the other way. The doctor's asset and mesh check
+over the real load order (`tools/bench/showcase.jsl`'s `doctor-assets`, `--no-native`, nif in
+three states alternating for five rounds, one warm-up and one measured run each, on the same
+binary) took a median of 11.10 s with every module marked, 12.93 s marked as the rows earned, and
+14.01 s with every per-type `records`, `fills`, and `scans` module marked whole on top of that.
+The per-type modules load when a mesh first needs their type, so marking one costs nothing until
+then, and the fast paths the rows didn't reach are the ones real meshes run. So nif stays marked
+whole. The table's final column is the row-marked session, kept as the record of what was tried;
+the package ships as all marked.
