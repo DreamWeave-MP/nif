@@ -1,0 +1,49 @@
+{
+  "schema_version": "3",
+  "document": "lock",
+  "project": "d6a547e9-7e26-4dcd-a5d0-d7234df8d0c4",
+  "note": "Written by CI when a release tag is pushed: what each published release's archive contains. Do not edit.",
+  "releases": [
+    {
+      "version": "0.1.0",
+      "locked_from": "6840b7baadb5cb5ebd90a7c48962985a7a1c474f",
+      "artifacts": [
+        {
+          "id": "jpk",
+          "format": "jpk",
+          "filename": "org.dreamweave.nif-0.1.0.jpk",
+          "media_type": "application/vnd.jess.jpk",
+          "size": 1094011,
+          "digests": {
+            "sha256": "72d5c82c48911dd11feb91cd2cc687f13ddab560224ad6e705c87eb20939cfa5"
+          },
+          "jess": {
+            "package": "org.dreamweave.nif",
+            "jess_api": "1",
+            "content_digest": "df3a5a6ece5355be28c4ef521a528759e2568acb4a18bb7e3f486d883d1282fe",
+            "dependencies": {}
+          }
+        }
+      ],
+      "runtimes": {},
+      "platforms": [],
+      "provides": [],
+      "relationships": [],
+      "components": [
+        {
+          "id": "main",
+          "name": "nif",
+          "path": ".",
+          "required": true,
+          "default": true,
+          "requires": [],
+          "conflicts": [],
+          "suggested_with": []
+        }
+      ],
+      "groups": [],
+      "extensions": {},
+      "critical_extensions": []
+    }
+  ]
+}
