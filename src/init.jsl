@@ -10,6 +10,9 @@ is decoded. A record is a plain table, decoded the first time `record` is asked 
 in it are array views of the file's bytes (`nif/array.jsl`). A save copies the bytes of every
 record never asked for and encodes the rest, edited or not. It keeps the records reachable from
 the roots, in file order, and writes a link to a record it leaves out as -1, as jess-nif does.
+
+The record model is a port of the `nif` library of the tes3 crate by Greatness7 (MIT OR
+Apache-2.0); LICENSES/tes3-NOTICE.txt has the attribution.
 ]]
 
 local Array = require '@self/internal/array'
